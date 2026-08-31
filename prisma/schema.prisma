@@ -1,0 +1,179 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model aircrafts {
+  id                  Int       @id @default(autoincrement())
+  registration_number String    @unique @db.VarChar(50)
+  aircraft_type       String?   @db.VarChar(100)
+  aircraft_owner      String?   @db.VarChar(150)
+  operator            String?   @db.VarChar(150)
+  mtow                Decimal?  @db.Decimal(10, 2)
+  status              String?   @db.VarChar(50)
+  tenant_id           Int?
+  asset_id            Int?
+  foto                String?
+  capacity            Int?
+  created_at          DateTime? @default(now()) @db.Timestamp(6)
+  updated_at          DateTime? @default(now()) @db.Timestamp(6)
+  assets              assets?   @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
+  tenants             tenants?  @relation(fields: [tenant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model assets {
+  id                  Int         @id @default(autoincrement())
+  kode_aset           String      @unique @db.VarChar(50)
+  jenis_aset          String      @db.VarChar(50)
+  nama_aset           String      @db.VarChar(150)
+  lokasi              String?     @db.VarChar(150)
+  zona                String?     @db.VarChar(100)
+  koordinat_gis       String?     @db.VarChar(100)
+  luas                Decimal?    @db.Decimal(10, 2)
+  satuan              String?     @db.VarChar(20)
+  kapasitas           String?     @db.VarChar(100)
+  kondisi             String?     @db.VarChar(50)
+  status              String?     @default("Available") @db.VarChar(50)
+  master_tariff_id    Int?
+  foto                String?
+  dokumen_kepemilikan String?     @db.VarChar(255)
+  spesifikasi_detail  Json?
+  created_at          DateTime?   @default(now()) @db.Timestamp(6)
+  updated_at          DateTime?   @default(now()) @db.Timestamp(6)
+  aircrafts           aircrafts[]
+  rental_applications rental_applications[]
+  contracts           contracts[]
+  master_tariffs      master_tariffs? @relation(fields: [master_tariff_id], references: [id], onDelete: SetNull)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model tenants {
+  id                Int         @id @default(autoincrement())
+  user_id           Int?
+  tenant_id_str     String?     @unique @db.VarChar(50)
+  nama_perusahaan   String      @db.VarChar(150)
+  nib               String?     @db.VarChar(50)
+  npwp              String?     @db.VarChar(50)
+  alamat            String?
+  pic               String?     @db.VarChar(100)
+  nomor_telepon     String?     @db.VarChar(50)
+  email             String?     @db.VarChar(100)
+  legalitas         Json?
+  informasi_bank    Json?
+  status_pembayaran String?     @default("Current") @db.VarChar(50)
+  created_at        DateTime?   @default(now()) @db.Timestamp(6)
+  updated_at        DateTime?   @default(now()) @db.Timestamp(6)
+  status_verifikasi String?     @default("Pending") @db.VarChar(20)
+  aircrafts           aircrafts[]
+  rental_applications rental_applications[]
+  contracts           contracts[]
+  invoices            invoices[]
+  warnings            warnings[]
+  users               users?      @relation(fields: [user_id], references: [id], onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model users {
+  id            Int       @id @default(autoincrement())
+  username      String    @unique @db.VarChar(50)
+  password_hash String    @db.VarChar(255)
+  role          String    @db.VarChar(20)
+  created_at    DateTime? @default(now()) @db.Timestamp(6)
+  tenants       tenants[]
+}
+
+model rental_applications {
+  id                 Int         @id @default(autoincrement())
+  application_number String      @unique @db.VarChar(50)
+  tenant_id          Int
+  asset_id           Int?
+  purpose            String?     @db.VarChar(255)
+  specific_needs     Json?
+  status             String?     @default("Pending") @db.VarChar(50)
+  start_date         DateTime?   @db.Date
+  end_date           DateTime?   @db.Date
+  created_at         DateTime?   @default(now()) @db.Timestamp(6)
+  updated_at         DateTime?   @default(now()) @db.Timestamp(6)
+  tenants            tenants     @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  assets             assets?     @relation(fields: [asset_id], references: [id], onDelete: SetNull)
+  contracts          contracts?
+}
+
+model contracts {
+  id                 Int         @id @default(autoincrement())
+  contract_number    String      @unique @db.VarChar(50)
+  application_id     Int         @unique
+  tenant_id          Int
+  asset_id           Int
+  status               String?     @default("Draft") @db.VarChar(50)
+  start_date           DateTime?   @db.Date
+  end_date             DateTime?   @db.Date
+  jenis_pemanfaatan    String?     @db.VarChar(255)
+  luas                 Decimal?    @db.Decimal(10, 2)
+  tarif_satuan         Decimal?    @db.Decimal(15, 2)
+  periode_pembayaran   String?     @default("Bulanan") @db.VarChar(50)
+  deposit_jaminan      Decimal?    @default(0) @db.Decimal(15, 2)
+  fasilitas            Json?
+  ketentuan_pembayaran String?
+  denda                String?
+  total_amount         Decimal?    @db.Decimal(15, 2)
+  file_url             String?     @db.VarChar(255)
+  admin_signature      String?     @db.Text
+  tenant_signature     String?     @db.Text
+  created_at           DateTime?   @default(now()) @db.Timestamp(6)
+  updated_at         DateTime?   @default(now()) @db.Timestamp(6)
+  rental_applications rental_applications @relation(fields: [application_id], references: [id], onDelete: Cascade)
+  tenants            tenants     @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  assets             assets      @relation(fields: [asset_id], references: [id], onDelete: Restrict)
+  invoices           invoices[]
+}
+
+model master_tariffs {
+  id            Int       @id @default(autoincrement())
+  kode_tarif    String    @unique @db.VarChar(50)
+  jenis_layanan String    @db.VarChar(100)
+  objek         String    @db.VarChar(150)
+  satuan        String    @db.VarChar(50)
+  tarif         Decimal   @db.Decimal(15, 2)
+  dasar_hukum   String?   @db.VarChar(255)
+  status        String?   @default("Active") @db.VarChar(50)
+  created_at    DateTime? @default(now()) @db.Timestamp(6)
+  updated_at    DateTime? @default(now()) @db.Timestamp(6)
+  assets        assets[]
+}
+
+model invoices {
+  id             Int       @id @default(autoincrement())
+  invoice_number String    @unique @db.VarChar(50)
+  contract_id    Int
+  tenant_id      Int
+  amount         Decimal   @db.Decimal(15, 2)
+  due_date       DateTime? @db.Date
+  status         String?   @default("Unpaid") @db.VarChar(50)
+  payment_date   DateTime? @db.Timestamp(6)
+  created_at     DateTime? @default(now()) @db.Timestamp(6)
+  updated_at     DateTime? @default(now()) @db.Timestamp(6)
+  
+  contracts      contracts @relation(fields: [contract_id], references: [id], onDelete: Cascade)
+  tenants        tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  warnings       warnings[]
+}
+
+model warnings {
+  id             Int       @id @default(autoincrement())
+  warning_number String    @unique @db.VarChar(50)
+  tenant_id      Int
+  invoice_id     Int?
+  type           String    @db.VarChar(50)
+  message        String?   @db.Text
+  status         String?   @default("Sent") @db.VarChar(50)
+  created_at     DateTime? @default(now()) @db.Timestamp(6)
+  
+  tenants        tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  invoices       invoices? @relation(fields: [invoice_id], references: [id], onDelete: SetNull)
+}
