@@ -1,8 +1,13 @@
 const prisma = require('../config/db');
 
-exports.fetchAssets = async () => {
+exports.fetchAssets = async (airportId) => {
+  let whereClause = {};
+  if (airportId) {
+    whereClause = { airport_id: parseInt(airportId) };
+  }
   return await prisma.assets.findMany({
-    include: { master_tariffs: true },
+    where: whereClause,
+    include: { master_tariffs: true, airports: true, zones: true },
     orderBy: { id: 'asc' }
   });
 };
@@ -10,7 +15,7 @@ exports.fetchAssets = async () => {
 exports.fetchAssetById = async (id) => {
   const asset = await prisma.assets.findUnique({
     where: { id: parseInt(id) },
-    include: { master_tariffs: true }
+    include: { master_tariffs: true, airports: true, zones: true }
   });
   if (!asset) throw new Error('Asset not found');
   return asset;

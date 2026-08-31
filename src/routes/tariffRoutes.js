@@ -1,16 +1,19 @@
 const express = require('express');
 const router = express.Router();
-const prisma = require('../config/db');
+const tariffController = require('../controllers/tariffController');
+const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddleware');
 
-router.get('/', async (req, res, next) => {
-  try {
-    const tariffs = await prisma.master_tariffs.findMany({
-      orderBy: { id: 'asc' }
-    });
-    res.status(200).json({ success: true, data: tariffs });
-  } catch (error) {
-    next(error);
-  }
-});
+router.use(authMiddleware);
+
+router
+  .route('/')
+  .get(tariffController.getAllTariffs)
+  .post(authorizeRoles('admin', 'superadmin'), tariffController.createTariff);
+
+router
+  .route('/:id')
+  .get(tariffController.getTariffById)
+  .put(authorizeRoles('admin', 'superadmin'), tariffController.updateTariff)
+  .delete(authorizeRoles('admin', 'superadmin'), tariffController.deleteTariff);
 
 module.exports = router;

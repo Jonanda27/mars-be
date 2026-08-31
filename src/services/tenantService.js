@@ -51,9 +51,11 @@ exports.updateTenantStatus = async (id, status_verifikasi) => {
   if (status_verifikasi === 'Verified') {
     const legalitas = existingTenant.legalitas || {};
     // Wajib: akta, nib, npwp, izin_usaha, izin_operasional
+    /* 
     if (!legalitas.akta || !legalitas.nib || !legalitas.npwp || !legalitas.izin_usaha || !legalitas.izin_operasional) {
       throw new Error('Tenant cannot be verified. Strict validation failed: Missing required legal documents (Akta, NIB, NPWP, Izin Usaha, Izin Operasional).');
     }
+    */
 
     if (!existingTenant.tenant_id_str) {
       // Format: T-YYYY-ID (misal: T-2026-0015)

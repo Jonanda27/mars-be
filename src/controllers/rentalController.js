@@ -28,7 +28,8 @@ exports.getTenantApplications = async (req, res, next) => {
 
 exports.getAllApplications = async (req, res, next) => {
   try {
-    const apps = await rentalService.getAllApplications();
+    const airportId = req.user.role.toLowerCase() === 'superadmin' ? null : req.user.airport_id;
+    const apps = await rentalService.getAllApplications(airportId);
     res.status(200).json({ success: true, data: apps });
   } catch (error) {
     next(error);

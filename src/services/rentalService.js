@@ -124,8 +124,18 @@ exports.getApplicationsByTenant = async (tenantId) => {
   });
 };
 
-exports.getAllApplications = async () => {
+exports.getAllApplications = async (airportId) => {
+  let whereClause = {};
+  if (airportId) {
+    whereClause = {
+      assets: {
+        airport_id: parseInt(airportId)
+      }
+    };
+  }
+
   return await prisma.rental_applications.findMany({
+    where: whereClause,
     include: {
       tenants: true,
       assets: true
@@ -211,10 +221,13 @@ exports.updateApplicationStatus = async (id, status, assetIdOverride) => {
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // inclusive of start day
       
       if (periodePembayaran === 'Harian') {
+        // Hanggar: Tarif x Hari x (Qty Pesawat = 1 asumsi sementara)
         totalAmount = tarifSatuan * diffDays;
       } else {
+        // Ruangan / Gudang: Tarif (per m2) x Luas x Bulan
         const months = diffDays / 30; // approx for Bulanan
-        totalAmount = tarifSatuan * months;
+        const luas = asset.luas ? parseFloat(asset.luas) : 1;
+        totalAmount = tarifSatuan * months * luas;
       }
     }
 

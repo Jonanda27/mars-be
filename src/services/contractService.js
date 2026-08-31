@@ -33,6 +33,8 @@ exports.updateContract = async (id, payload) => {
       deposit_jaminan: payload.deposit_jaminan !== undefined ? parseFloat(payload.deposit_jaminan) : undefined,
       total_amount: payload.total_amount !== undefined ? parseFloat(payload.total_amount) : undefined,
       status: payload.status,
+      fasilitas: payload.fasilitas !== undefined ? payload.fasilitas : undefined,
+      denda: payload.denda !== undefined ? payload.denda : undefined,
       admin_signature: payload.admin_signature !== undefined ? payload.admin_signature : undefined
     }
   });

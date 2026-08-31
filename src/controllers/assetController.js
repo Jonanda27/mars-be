@@ -2,7 +2,11 @@ const assetService = require('../services/assetService');
 
 exports.getAssets = async (req, res, next) => {
   try {
-    const assets = await assetService.fetchAssets();
+    let airportId = null;
+    if (req.user && req.user.role.toLowerCase() === 'admin') {
+      airportId = req.user.airport_id;
+    }
+    const assets = await assetService.fetchAssets(airportId);
     res.status(200).json({ success: true, data: assets });
   } catch (error) {
     next(error);

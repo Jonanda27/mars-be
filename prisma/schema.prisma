@@ -25,14 +25,44 @@ model aircrafts {
   tenants             tenants?  @relation(fields: [tenant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
+model airports {
+  id              Int       @id @default(autoincrement())
+  kode_bandara    String    @unique @db.VarChar(50)
+  nama_bandara    String    @db.VarChar(150)
+  lokasi          String?   @db.VarChar(150)
+  deskripsi       String?   @db.Text
+  created_at      DateTime? @default(now()) @db.Timestamp(6)
+  updated_at      DateTime? @default(now()) @db.Timestamp(6)
+  
+  users           users[]
+  zones           zones[]
+  assets          assets[]
+}
+
+model zones {
+  id          Int       @id @default(autoincrement())
+  airport_id  Int
+  kode_zona   String    @unique @db.VarChar(50)
+  nama_zona   String    @db.VarChar(100)
+  tipe_zona   String?   @db.VarChar(50)
+  deskripsi   String?   @db.Text
+  created_at  DateTime? @default(now()) @db.Timestamp(6)
+  updated_at  DateTime? @default(now()) @db.Timestamp(6)
+  
+  airports    airports  @relation(fields: [airport_id], references: [id], onDelete: Cascade)
+  assets      assets[]
+}
+
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model assets {
   id                  Int         @id @default(autoincrement())
+  airport_id          Int?
+  zone_id             Int?
   kode_aset           String      @unique @db.VarChar(50)
   jenis_aset          String      @db.VarChar(50)
   nama_aset           String      @db.VarChar(150)
   lokasi              String?     @db.VarChar(150)
-  zona                String?     @db.VarChar(100)
+  zona                String?     @db.VarChar(100) // Legacy, but kept for fallback
   koordinat_gis       String?     @db.VarChar(100)
   luas                Decimal?    @db.Decimal(10, 2)
   satuan              String?     @db.VarChar(20)
@@ -45,6 +75,9 @@ model assets {
   spesifikasi_detail  Json?
   created_at          DateTime?   @default(now()) @db.Timestamp(6)
   updated_at          DateTime?   @default(now()) @db.Timestamp(6)
+  
+  airports            airports?   @relation(fields: [airport_id], references: [id], onDelete: SetNull)
+  zones               zones?      @relation(fields: [zone_id], references: [id], onDelete: SetNull)
   aircrafts           aircrafts[]
   rental_applications rental_applications[]
   contracts           contracts[]
@@ -83,7 +116,10 @@ model users {
   username      String    @unique @db.VarChar(50)
   password_hash String    @db.VarChar(255)
   role          String    @db.VarChar(20)
+  airport_id    Int?
   created_at    DateTime? @default(now()) @db.Timestamp(6)
+  
+  airports      airports? @relation(fields: [airport_id], references: [id], onDelete: SetNull)
   tenants       tenants[]
 }
 
@@ -141,6 +177,8 @@ model master_tariffs {
   satuan        String    @db.VarChar(50)
   tarif         Decimal   @db.Decimal(15, 2)
   dasar_hukum   String?   @db.VarChar(255)
+  valid_from    DateTime? @db.Date
+  valid_to      DateTime? @db.Date
   status        String?   @default("Active") @db.VarChar(50)
   created_at    DateTime? @default(now()) @db.Timestamp(6)
   updated_at    DateTime? @default(now()) @db.Timestamp(6)

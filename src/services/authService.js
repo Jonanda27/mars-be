@@ -77,6 +77,7 @@ exports.loginUser = async (username, password) => {
     id: user.id,
     username: user.username,
     role: user.role,
+    airport_id: user.airport_id,
     tenant_id: tenantData ? tenantData.id : null,
     tenant_id_str: tenantData ? tenantData.tenant_id_str : null,
     status_verifikasi: tenantData ? tenantData.status_verifikasi : null
@@ -107,6 +108,7 @@ exports.getUserProfile = async (userId) => {
     id: user.id,
     username: user.username,
     role: user.role,
+    airport_id: user.airport_id,
     tenant_id: tenantData ? tenantData.id : null,
     tenant_id_str: tenantData ? tenantData.tenant_id_str : null,
     nama_perusahaan: tenantData ? tenantData.nama_perusahaan : null,
