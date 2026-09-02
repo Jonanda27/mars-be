@@ -12,11 +12,16 @@ const contractRoutes = require('./src/routes/contractRoutes');
 const tariffRoutes = require('./src/routes/tariffRoutes');
 const invoiceRoutes = require('./src/routes/invoiceRoutes');
 const warningRoutes = require('./src/routes/warningRoutes');
+const cronRoutes = require('./src/routes/cronRoutes');
 const errorHandler = require('./src/middlewares/errorHandler');
-const { initCronJobs } = require('./src/jobs/contractMonitor');
+const { initCronJobs: initContractMonitor } = require('./src/jobs/contractMonitor');
+const { initCronJobs: initBillingCron } = require('./src/workers/billingCron');
+const { initPenaltyCron } = require('./src/workers/penaltyCron');
 
 // Initialize cron jobs
-initCronJobs();
+initContractMonitor();
+initBillingCron();
+initPenaltyCron();
 
 // Middlewares
 app.use(cors());
@@ -33,6 +38,7 @@ app.use('/api/contracts', contractRoutes);
 app.use('/api/tariffs', tariffRoutes);
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/warnings', warningRoutes);
+app.use('/api/cron', cronRoutes);
 
 app.get('/', (req, res) => {
   res.json({ message: 'Welcome to MARS Backend API' });

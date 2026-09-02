@@ -75,31 +75,109 @@ exports.generateInvoice = async (contractId, isPeriodic = false) => {
     }
   }
 
-  // Generate invoice number
   const today = new Date();
   const year = today.getFullYear();
   const month = String(today.getMonth() + 1).padStart(2, '0');
-  const count = await prisma.invoices.count();
-  const seq = String(count + 1).padStart(3, '0');
-  const invoiceNumber = `SKRD/${year}/${month}/${seq}`;
+  let calculatedAmount = Number(contract.total_amount) || 0;
+  
+  let invoicesToCreate = [];
+  
+  if (contract.periode_pembayaran === 'Bulanan' && contract.start_date && contract.end_date) {
+    const start = new Date(contract.start_date);
+    const end = new Date(contract.end_date);
+    let months = (end.getFullYear() - start.getFullYear()) * 12;
+    months -= start.getMonth();
+    months += end.getMonth();
+    if (months <= 0) months = 1; 
+    calculatedAmount = calculatedAmount / months;
 
-  // Set due date (e.g., 14 days from now)
-  const dueDate = new Date();
-  dueDate.setDate(dueDate.getDate() + 14);
+    const count = await prisma.invoices.count();
 
-  return await prisma.invoices.create({
-    data: {
-      invoice_number: invoiceNumber,
-      contract_id: contract.id,
-      tenant_id: contract.tenant_id,
-      amount: contract.total_amount, // or we can add deposit here
-      due_date: dueDate,
-      status: 'Unpaid'
+    for (let i = 0; i < months; i++) {
+      // Calculate due date for the i-th month
+      const dueDate = new Date(start);
+      dueDate.setMonth(dueDate.getMonth() + i);
+      dueDate.setDate(dueDate.getDate() + 14); // 14 days after start of that month
+
+      // Invoice number
+      const seq = String(count + i + 1).padStart(3, '0');
+      const invNumber = `SKRD/${year}/${month}/${seq}`;
+
+      let status = i === 0 ? 'Unpaid' : 'Scheduled';
+      let amount = calculatedAmount;
+      if (i === 0 && contract.deposit_jaminan) {
+         amount += Number(contract.deposit_jaminan);
+      }
+
+      invoicesToCreate.push({
+        invoice_number: invNumber,
+        contract_id: contract.id,
+        tenant_id: contract.tenant_id,
+        amount: amount,
+        due_date: dueDate,
+        status: status,
+        created_at: dueDate // Set created_at to due date so they show up chronologically
+      });
     }
-  });
+
+    // Insert all
+    await prisma.invoices.createMany({
+      data: invoicesToCreate
+    });
+
+    // Return the first one
+    return await prisma.invoices.findFirst({
+       where: { contract_id: contract.id },
+       orderBy: { due_date: 'asc' }
+    });
+
+  } else {
+    // Single invoice logic (Sekaligus or Harian or missing dates)
+    if (contract.periode_pembayaran === 'Tahunan' && contract.start_date && contract.end_date) {
+      const start = new Date(contract.start_date);
+      const end = new Date(contract.end_date);
+      let years = end.getFullYear() - start.getFullYear();
+      if (years <= 0) years = 1;
+      calculatedAmount = calculatedAmount / years;
+    }
+    
+    if (!isPeriodic && contract.deposit_jaminan) {
+      calculatedAmount += Number(contract.deposit_jaminan);
+    }
+
+    const count = await prisma.invoices.count();
+    const seq = String(count + 1).padStart(3, '0');
+    const invoiceNumber = `SKRD/${year}/${month}/${seq}`;
+    
+    const dueDate = new Date();
+    dueDate.setDate(dueDate.getDate() + 14);
+
+    return await prisma.invoices.create({
+      data: {
+        invoice_number: invoiceNumber,
+        contract_id: contract.id,
+        tenant_id: contract.tenant_id,
+        amount: calculatedAmount,
+        due_date: dueDate,
+        status: 'Unpaid'
+      }
+    });
+  }
 };
 
-exports.payInvoice = async (id) => {
+exports.uploadReceipt = async (id, filename, method) => {
+  const invoice = await prisma.invoices.update({
+    where: { id: parseInt(id) },
+    data: {
+      status: 'Pending Verification',
+      payment_receipt: filename,
+      payment_method: method
+    }
+  });
+  return invoice;
+};
+
+exports.verifyPayment = async (id) => {
   const invoice = await prisma.invoices.update({
     where: { id: parseInt(id) },
     data: {

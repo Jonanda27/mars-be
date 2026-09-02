@@ -35,6 +35,7 @@ exports.updateContract = async (id, payload) => {
       status: payload.status,
       fasilitas: payload.fasilitas !== undefined ? payload.fasilitas : undefined,
       denda: payload.denda !== undefined ? payload.denda : undefined,
+      periode_pembayaran: payload.periode_pembayaran !== undefined ? payload.periode_pembayaran : undefined,
       admin_signature: payload.admin_signature !== undefined ? payload.admin_signature : undefined
     }
   });

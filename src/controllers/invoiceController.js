@@ -32,10 +32,24 @@ exports.getInvoiceById = async (req, res, next) => {
   }
 };
 
-exports.payInvoice = async (req, res, next) => {
+exports.uploadReceipt = async (req, res, next) => {
   try {
-    const invoice = await invoiceService.payInvoice(req.params.id);
-    res.json({ success: true, data: invoice });
+    const method = req.body.payment_method;
+    const filename = req.file ? req.file.filename : null;
+    if (!filename) {
+      return res.status(400).json({ success: false, message: 'Bukti bayar diperlukan' });
+    }
+    const invoice = await invoiceService.uploadReceipt(req.params.id, filename, method);
+    res.json({ success: true, data: invoice, message: 'Bukti bayar berhasil diunggah' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.verifyPayment = async (req, res, next) => {
+  try {
+    const invoice = await invoiceService.verifyPayment(req.params.id);
+    res.json({ success: true, data: invoice, message: 'Pembayaran berhasil diverifikasi' });
   } catch (error) {
     next(error);
   }

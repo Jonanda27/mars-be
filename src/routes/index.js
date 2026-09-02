@@ -1,6 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const testController = require('../controllers/testController');
 const authRoutes = require('./authRoutes');
 const tenantRoutes = require('./tenantRoutes');
 const assetRoutes = require('./assetRoutes');
@@ -15,9 +14,6 @@ const zoneRoutes = require('./zoneRoutes');
 
 // Auth Routes
 router.use('/auth', authRoutes);
-
-// Test Routes
-router.get('/test-db', testController.testDatabaseConnection);
 
 // Entity Routes
 router.use('/tenants', tenantRoutes);
