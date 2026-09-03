@@ -11,6 +11,7 @@ const warningRoutes = require('./warningRoutes');
 const tariffRoutes = require('./tariffRoutes');
 const airportRoutes = require('./airportRoutes');
 const zoneRoutes = require('./zoneRoutes');
+const parkingRoutes = require('./parkingRoutes');
 
 // Auth Routes
 router.use('/auth', authRoutes);
@@ -26,5 +27,7 @@ router.use('/warnings', warningRoutes);
 router.use('/tariffs', tariffRoutes);
 router.use('/airports', airportRoutes);
 router.use('/zones', zoneRoutes);
+router.use('/parking', parkingRoutes);
 
 module.exports = router;
+

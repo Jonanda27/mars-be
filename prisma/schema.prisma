@@ -37,6 +37,8 @@ model airports {
   users           users[]
   zones           zones[]
   assets          assets[]
+  ticket_books    parking_ticket_books[]
+  handovers       parking_warden_handovers[]
 }
 
 model zones {
@@ -218,3 +220,45 @@ model warnings {
   tenants        tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   invoices       invoices? @relation(fields: [invoice_id], references: [id], onDelete: SetNull)
 }
+
+// =========================================================================
+// MODEL PARKIR MANUAL FASE 1
+// =========================================================================
+
+model parking_ticket_books {
+  id                  Int       @id @default(autoincrement())
+  airport_id          Int
+  kode_buku           String    @unique @db.VarChar(50)
+  jenis_karcis        String    @db.VarChar(50) // Roda 2, Roda 4, VIP, Inap
+  seri_awal           Int
+  seri_akhir          Int
+  nominal_per_lembar  Decimal   @db.Decimal(15, 2)
+  status              String    @default("STOK") @db.VarChar(20) // STOK, ACTIVE, HABIS
+  created_at          DateTime? @default(now()) @db.Timestamp(6)
+  updated_at          DateTime? @default(now()) @db.Timestamp(6)
+
+  airports            airports  @relation(fields: [airport_id], references: [id], onDelete: Cascade)
+  handovers           parking_warden_handovers[]
+}
+
+model parking_warden_handovers {
+  id                      Int         @id @default(autoincrement())
+  airport_id              Int
+  book_id                 Int
+  warden_name             String      @db.VarChar(100) // Nama Juru Parkir
+  dispatched_serial_start Int
+  dispatched_serial_end   Int
+  last_returned_serial    Int?        // Nomor seri sisa karcis terkecil yang dikembalikan
+  sold_qty                Int?        // Jumlah terpakai (dihitung)
+  expected_amount         Decimal?    @db.Decimal(15, 2) // Rupiah seharusnya (dihitung)
+  actual_cash_settled     Decimal?    @db.Decimal(15, 2) // Uang riil yang disetor
+  unmatched_amount        Decimal?    @db.Decimal(15, 2) // Selisih (+ / -)
+  notes                   String?     @db.Text
+  status                  String      @default("DISTRIBUTED") @db.VarChar(20) // DISTRIBUTED, SETTLED
+  dispatch_time           DateTime?   @default(now()) @db.Timestamp(6)
+  settle_time             DateTime?   @db.Timestamp(6)
+
+  airports                airports    @relation(fields: [airport_id], references: [id], onUpdate: NoAction)
+  ticket_books            parking_ticket_books @relation(fields: [book_id], references: [id], onDelete: Restrict)
+}
+

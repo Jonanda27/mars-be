@@ -1,0 +1,4317 @@
+=== MARS-BE SMART ANALYSIS (BACKEND CODEBASE BUNDLE) ===
+
+
+--- FILE: index.js ---
+const express = require('express');
+const cors = require('cors');
+const morgan = require('morgan');
+require('dotenv').config();
+
+const app = express();
+const port = process.env.PORT || 3001;
+
+const routes = require('./src/routes');
+const contractRoutes = require('./src/routes/contractRoutes');
+const tariffRoutes = require('./src/routes/tariffRoutes');
+const invoiceRoutes = require('./src/routes/invoiceRoutes');
+const warningRoutes = require('./src/routes/warningRoutes');
+const cronRoutes = require('./src/routes/cronRoutes');
+const errorHandler = require('./src/middlewares/errorHandler');
+const { initCronJobs: initContractMonitor } = require('./src/jobs/contractMonitor');
+const { initCronJobs: initBillingCron } = require('./src/workers/billingCron');
+const { initPenaltyCron } = require('./src/workers/penaltyCron');
+
+initContractMonitor();
+initBillingCron();
+initPenaltyCron();
+
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(morgan('dev'));
+
+const path = require('path');
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
+
+app.use('/api', routes);
+app.use('/api/contracts', contractRoutes);
+app.use('/api/tariffs', tariffRoutes);
+app.use('/api/invoices', invoiceRoutes);
+app.use('/api/warnings', warningRoutes);
+app.use('/api/cron', cronRoutes);
+
+app.get('/', (req, res) => {
+  res.json({ message: 'Welcome to MARS Backend API' });
+});
+
+app.use((req, res, next) => {
+  const error = new Error('Endpoint Not Found');
+  error.statusCode = 404;
+  next(error);
+});
+
+app.use(errorHandler);
+
+app.listen(port, () => {
+  console.log(`Backend server is running on port ${port}`);
+});
+
+--- FILE: package.json ---
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dayjs": "^1.11.23",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "joi": "^18.2.5",
+    "jsonwebtoken": "^9.0.3",
+    "morgan": "^1.11.0",
+    "multer": "^2.2.0",
+    "node-cron": "^4.6.0",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@prisma/client": "^5.22.0",
+    "nodemon": "^3.1.14",
+    "prisma": "^5.22.0"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  }
+}
+
+--- FILE: prisma\schema.prisma ---
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model aircrafts {
+  id                  Int       @id @default(autoincrement())
+  registration_number String    @unique @db.VarChar(50)
+  aircraft_type       String?   @db.VarChar(100)
+  aircraft_owner      String?   @db.VarChar(150)
+  operator            String?   @db.VarChar(150)
+  mtow                Decimal?  @db.Decimal(10, 2)
+  status              String?   @db.VarChar(50)
+  tenant_id           Int?
+  asset_id            Int?
+  foto                String?
+  capacity            Int?
+  created_at          DateTime? @default(now()) @db.Timestamp(6)
+  updated_at          DateTime? @default(now()) @db.Timestamp(6)
+  assets              assets?   @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
+  tenants             tenants?  @relation(fields: [tenant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model airports {
+  id              Int       @id @default(autoincrement())
+  kode_bandara    String    @unique @db.VarChar(50)
+  nama_bandara    String    @db.VarChar(150)
+  lokasi          String?   @db.VarChar(150)
+  deskripsi       String?   @db.Text
+  created_at      DateTime? @default(now()) @db.Timestamp(6)
+  updated_at      DateTime? @default(now()) @db.Timestamp(6)
+
+  users           users[]
+  zones           zones[]
+  assets          assets[]
+  ticket_books    parking_ticket_books[]
+  handovers       parking_warden_handovers[]
+}
+
+model zones {
+  id          Int       @id @default(autoincrement())
+  airport_id  Int
+  kode_zona   String    @unique @db.VarChar(50)
+  nama_zona   String    @db.VarChar(100)
+  tipe_zona   String?   @db.VarChar(50)
+  deskripsi   String?   @db.Text
+  created_at  DateTime? @default(now()) @db.Timestamp(6)
+  updated_at  DateTime? @default(now()) @db.Timestamp(6)
+
+  airports    airports  @relation(fields: [airport_id], references: [id], onDelete: Cascade)
+  assets      assets[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model assets {
+  id                  Int         @id @default(autoincrement())
+  airport_id          Int?
+  zone_id             Int?
+  kode_aset           String      @unique @db.VarChar(50)
+  jenis_aset          String      @db.VarChar(50)
+  nama_aset           String      @db.VarChar(150)
+  lokasi              String?     @db.VarChar(150)
+  zona                String?     @db.VarChar(100) // Legacy, but kept for fallback
+  koordinat_gis       String?     @db.VarChar(100)
+  luas                Decimal?    @db.Decimal(10, 2)
+  satuan              String?     @db.VarChar(20)
+  kapasitas           String?     @db.VarChar(100)
+  kondisi             String?     @db.VarChar(50)
+  status              String?     @default("Available") @db.VarChar(50)
+  master_tariff_id    Int?
+  foto                String?
+  dokumen_kepemilikan String?     @db.VarChar(255)
+  spesifikasi_detail  Json?
+  created_at          DateTime?   @default(now()) @db.Timestamp(6)
+  updated_at          DateTime?   @default(now()) @db.Timestamp(6)
+
+  airports            airports?   @relation(fields: [airport_id], references: [id], onDelete: SetNull)
+  zones               zones?      @relation(fields: [zone_id], references: [id], onDelete: SetNull)
+  aircrafts           aircrafts[]
+  rental_applications rental_applications[]
+  contracts           contracts[]
+  master_tariffs      master_tariffs? @relation(fields: [master_tariff_id], references: [id], onDelete: SetNull)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model tenants {
+  id                Int         @id @default(autoincrement())
+  user_id           Int?
+  tenant_id_str     String?     @unique @db.VarChar(50)
+  nama_perusahaan   String      @db.VarChar(150)
+  nib               String?     @db.VarChar(50)
+  npwp              String?     @db.VarChar(50)
+  alamat            String?
+  pic               String?     @db.VarChar(100)
+  nomor_telepon     String?     @db.VarChar(50)
+  email             String?     @db.VarChar(100)
+  legalitas         Json?
+  informasi_bank    Json?
+  status_pembayaran String?     @default("Current") @db.VarChar(50)
+  created_at        DateTime?   @default(now()) @db.Timestamp(6)
+  updated_at        DateTime?   @default(now()) @db.Timestamp(6)
+  status_verifikasi String?     @default("Pending") @db.VarChar(20)
+  aircrafts           aircrafts[]
+  rental_applications rental_applications[]
+  contracts           contracts[]
+  invoices            invoices[]
+  warnings            warnings[]
+  users               users?      @relation(fields: [user_id], references: [id], onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model users {
+  id            Int       @id @default(autoincrement())
+  username      String    @unique @db.VarChar(50)
+  password_hash String    @db.VarChar(255)
+  role          String    @db.VarChar(20)
+  airport_id    Int?
+  created_at    DateTime? @default(now()) @db.Timestamp(6)
+
+  airports      airports? @relation(fields: [airport_id], references: [id], onDelete: SetNull)
+  tenants       tenants[]
+}
+
+model rental_applications {
+  id                 Int         @id @default(autoincrement())
+  application_number String      @unique @db.VarChar(50)
+  tenant_id          Int
+  asset_id           Int?
+  purpose            String?     @db.VarChar(255)
+  specific_needs     Json?
+  status             String?     @default("Pending") @db.VarChar(50)
+  start_date         DateTime?   @db.Date
+  end_date           DateTime?   @db.Date
+  created_at         DateTime?   @default(now()) @db.Timestamp(6)
+  updated_at         DateTime?   @default(now()) @db.Timestamp(6)
+  tenants            tenants     @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  assets             assets?     @relation(fields: [asset_id], references: [id], onDelete: SetNull)
+  contracts          contracts?
+}
+
+model contracts {
+  id                 Int         @id @default(autoincrement())
+  contract_number    String      @unique @db.VarChar(50)
+  application_id     Int         @unique
+  tenant_id          Int
+  asset_id           Int
+  status               String?     @default("Draft") @db.VarChar(50)
+  start_date           DateTime?   @db.Date
+  end_date             DateTime?   @db.Date
+  jenis_pemanfaatan    String?     @db.VarChar(255)
+  luas                 Decimal?    @db.Decimal(10, 2)
+  tarif_satuan         Decimal?    @db.Decimal(15, 2)
+  periode_pembayaran   String?     @default("Bulanan") @db.VarChar(50)
+  deposit_jaminan      Decimal?    @default(0) @db.Decimal(15, 2)
+  fasilitas            Json?
+  ketentuan_pembayaran String?
+  denda                String?
+  total_amount         Decimal?    @db.Decimal(15, 2)
+  file_url             String?     @db.VarChar(255)
+  admin_signature      String?     @db.Text
+  tenant_signature     String?     @db.Text
+  created_at           DateTime?   @default(now()) @db.Timestamp(6)
+  updated_at         DateTime?   @default(now()) @db.Timestamp(6)
+  rental_applications rental_applications @relation(fields: [application_id], references: [id], onDelete: Cascade)
+  tenants            tenants     @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  assets             assets      @relation(fields: [asset_id], references: [id], onDelete: Restrict)
+  invoices           invoices[]
+}
+
+model master_tariffs {
+  id            Int       @id @default(autoincrement())
+  kode_tarif    String    @unique @db.VarChar(50)
+  jenis_layanan String    @db.VarChar(100)
+  objek         String    @db.VarChar(150)
+  satuan        String    @db.VarChar(50)
+  tarif         Decimal   @db.Decimal(15, 2)
+  dasar_hukum   String?   @db.VarChar(255)
+  valid_from    DateTime? @db.Date
+  valid_to      DateTime? @db.Date
+  status        String?   @default("Active") @db.VarChar(50)
+  created_at    DateTime? @default(now()) @db.Timestamp(6)
+  updated_at    DateTime? @default(now()) @db.Timestamp(6)
+  assets        assets[]
+}
+
+model invoices {
+  id             Int       @id @default(autoincrement())
+  invoice_number String    @unique @db.VarChar(50)
+  contract_id    Int
+  tenant_id      Int
+  amount         Decimal   @db.Decimal(15, 2)
+  penalty_amount Decimal?  @default(0) @db.Decimal(15, 2)
+  due_date       DateTime? @db.Date
+  status         String?   @default("Unpaid") @db.VarChar(50)
+  payment_method String?   @db.VarChar(100)
+  payment_receipt String?  @db.VarChar(255)
+  payment_date   DateTime? @db.Timestamp(6)
+  created_at     DateTime? @default(now()) @db.Timestamp(6)
+  updated_at     DateTime? @default(now()) @db.Timestamp(6)
+
+  contracts      contracts @relation(fields: [contract_id], references: [id], onDelete: Cascade)
+  tenants        tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  warnings       warnings[]
+}
+
+model warnings {
+  id             Int       @id @default(autoincrement())
+  warning_number String    @unique @db.VarChar(50)
+  tenant_id      Int
+  invoice_id     Int?
+  type           String    @db.VarChar(50)
+  message        String?   @db.Text
+  status         String?   @default("Sent") @db.VarChar(50)
+  created_at     DateTime? @default(now()) @db.Timestamp(6)
+
+  tenants        tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  invoices       invoices? @relation(fields: [invoice_id], references: [id], onDelete: SetNull)
+}
+
+// =========================================================================
+// MODEL PARKIR MANUAL FASE 1
+// =========================================================================
+
+model parking_ticket_books {
+  id                  Int       @id @default(autoincrement())
+  airport_id          Int
+  kode_buku           String    @unique @db.VarChar(50)
+  jenis_karcis        String    @db.VarChar(50) // Roda 2, Roda 4, VIP, Inap
+  seri_awal           Int
+  seri_akhir          Int
+  nominal_per_lembar  Decimal   @db.Decimal(15, 2)
+  status              String    @default("STOK") @db.VarChar(20) // STOK, ACTIVE, HABIS
+  created_at          DateTime? @default(now()) @db.Timestamp(6)
+  updated_at          DateTime? @default(now()) @db.Timestamp(6)
+
+  airports            airports  @relation(fields: [airport_id], references: [id], onDelete: Cascade)
+  handovers           parking_warden_handovers[]
+}
+
+model parking_warden_handovers {
+  id                      Int         @id @default(autoincrement())
+  airport_id              Int
+  book_id                 Int
+  warden_name             String      @db.VarChar(100) // Nama Juru Parkir
+  dispatched_serial_start Int
+  dispatched_serial_end   Int
+  last_returned_serial    Int?        // Nomor seri sisa karcis terkecil yang dikembalikan
+  sold_qty                Int?        // Jumlah terpakai (dihitung)
+  expected_amount         Decimal?    @db.Decimal(15, 2) // Rupiah seharusnya (dihitung)
+  actual_cash_settled     Decimal?    @db.Decimal(15, 2) // Uang riil yang disetor
+  unmatched_amount        Decimal?    @db.Decimal(15, 2) // Selisih (+ / -)
+  notes                   String?     @db.Text
+  status                  String      @default("DISTRIBUTED") @db.VarChar(20) // DISTRIBUTED, SETTLED
+  dispatch_time           DateTime?   @default(now()) @db.Timestamp(6)
+  settle_time             DateTime?   @db.Timestamp(6)
+
+  airports                airports    @relation(fields: [airport_id], references: [id], onUpdate: NoAction)
+  ticket_books            parking_ticket_books @relation(fields: [book_id], references: [id], onDelete: Restrict)
+}
+
+
+--- FILE: prisma\seed.js ---
+const { PrismaClient } = require('@prisma/client');
+const bcrypt = require('bcryptjs');
+
+const prisma = new PrismaClient();
+
+async function main() {
+  const username = 'admin';
+  const password = 'password123';
+
+  const existingAdmin = await prisma.users.findUnique({
+    where: { username }
+  });
+
+  if (!existingAdmin) {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const adminUser = await prisma.users.create({
+      data: {
+        username: username,
+        password_hash: hashedPassword,
+        role: 'Admin',
+      },
+    });
+    console.log('Seeding berhasil: User Admin dibuat.', adminUser);
+  } else {
+    console.log('Seeding diabaikan: User Admin sudah ada.');
+  }
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
+
+--- FILE: prisma\seed_master.js ---
+const { PrismaClient } = require('@prisma/client');
+const bcrypt = require('bcryptjs');
+const prisma = new PrismaClient();
+
+async function main() {
+  console.log('Seeding Master Data (2 Airports, Admins, & Assets)...');
+
+  const airportsData = [
+    {
+      kode_bandara: 'TIM',
+      nama_bandara: 'Bandara Mozes Kilangin',
+      lokasi: 'Timika, Papua Tengah',
+      deskripsi: 'Bandar Udara Internasional Mozes Kilangin'
+    },
+    {
+      kode_bandara: 'DJJ',
+      nama_bandara: 'Bandara Sentani',
+      lokasi: 'Jayapura, Papua',
+      deskripsi: 'Bandar Udara Internasional Sentani'
+    }
+  ];
+
+  const createdAirports = {};
+  for (const ap of airportsData) {
+    const airport = await prisma.airports.upsert({
+      where: { kode_bandara: ap.kode_bandara },
+      update: {},
+      create: ap
+    });
+    createdAirports[ap.kode_bandara] = airport;
+    console.log(`Airport ensured: ${airport.nama_bandara}`);
+  }
+
+  const zoneTypes = [
+    { kode_suffix: 'TERM', nama_zona: 'Terminal', tipe_zona: 'Terminal' },
+    { kode_suffix: 'APRN', nama_zona: 'Apron', tipe_zona: 'Apron' },
+    { kode_suffix: 'HNGR', nama_zona: 'Hanggar Area', tipe_zona: 'Hanggar Area' },
+    { kode_suffix: 'COMM', nama_zona: 'Commercial Area', tipe_zona: 'Commercial Area' },
+    { kode_suffix: 'PARK', nama_zona: 'Parking Area', tipe_zona: 'Parking Area' },
+    { kode_suffix: 'OFFC', nama_zona: 'Office Area', tipe_zona: 'Office Area' },
+    { kode_suffix: 'SUPP', nama_zona: 'Supporting Facilities', tipe_zona: 'Supporting Facilities' }
+  ];
+
+  const createdZones = {
+    TIM: {},
+    DJJ: {}
+  };
+
+  for (const airportCode of ['TIM', 'DJJ']) {
+    for (const zt of zoneTypes) {
+      const kode_zona = `${airportCode}-${zt.kode_suffix}`;
+      const zone = await prisma.zones.upsert({
+        where: { kode_zona },
+        update: { airport_id: createdAirports[airportCode].id },
+        create: {
+          kode_zona,
+          nama_zona: `${zt.nama_zona} ${airportCode}`,
+          tipe_zona: zt.tipe_zona,
+          airport_id: createdAirports[airportCode].id
+        }
+      });
+      createdZones[airportCode][zt.kode_suffix] = zone;
+    }
+    console.log(`Zones seeded for ${airportCode}.`);
+  }
+
+  const defaultPassword = 'password123';
+  const salt = await bcrypt.genSalt(10);
+  const password_hash = await bcrypt.hash(defaultPassword, salt);
+
+  const usersData = [
+    {
+      username: 'super_admin',
+      role: 'superadmin',
+      airport_id: null
+    },
+    {
+      username: 'admin_timika',
+      role: 'admin',
+      airport_id: createdAirports['TIM'].id
+    },
+    {
+      username: 'admin_sentani',
+      role: 'admin',
+      airport_id: createdAirports['DJJ'].id
+    }
+  ];
+
+  for (const u of usersData) {
+    await prisma.users.upsert({
+      where: { username: u.username },
+      update: {
+        airport_id: u.airport_id,
+        role: u.role
+      },
+      create: {
+        username: u.username,
+        password_hash,
+        role: u.role,
+        airport_id: u.airport_id
+      }
+    });
+  }
+  console.log('Users seeded (super_admin, admin_timika, admin_sentani).');
+
+  const tariffsData = [
+
+    { kode_tarif: 'TRF-HGR-AS350', jenis_layanan: 'Sewa Hanggar', objek: 'AS350 Series', satuan: 'unit/malam', tarif: 3500000 },
+    { kode_tarif: 'TRF-HGR-BELL206', jenis_layanan: 'Sewa Hanggar', objek: 'Bell 206 - Bell 407 Series', satuan: 'unit/malam', tarif: 3500000 },
+    { kode_tarif: 'TRF-HGR-BELL412', jenis_layanan: 'Sewa Hanggar', objek: 'Bell 412 - Bell 212', satuan: 'unit/malam', tarif: 4500000 },
+    { kode_tarif: 'TRF-HGR-KAMOV', jenis_layanan: 'Sewa Hanggar', objek: 'Kamov - MI', satuan: 'unit/malam', tarif: 6000000 },
+
+    { kode_tarif: 'TRF-HGR-C208', jenis_layanan: 'Sewa Hanggar', objek: 'Cessna Caravan C208', satuan: 'unit/malam', tarif: 3500000 },
+    { kode_tarif: 'TRF-HGR-PAC750', jenis_layanan: 'Sewa Hanggar', objek: 'PAC 750 XL', satuan: 'unit/malam', tarif: 3500000 },
+    { kode_tarif: 'TRF-HGR-DHC6', jenis_layanan: 'Sewa Hanggar', objek: 'DHC-6 Series', satuan: 'unit/malam', tarif: 4500000 },
+    { kode_tarif: 'TRF-HGR-ATR', jenis_layanan: 'Sewa Hanggar', objek: 'ATR Series', satuan: 'unit/malam', tarif: 6000000 },
+
+    { kode_tarif: 'TRF-APRON-ALL', jenis_layanan: 'Sewa Apron', objek: 'Penggunaan Apron Area', satuan: 'unit/malam', tarif: 2000000 },
+
+    { kode_tarif: 'TRF-RMG-IN-TB', jenis_layanan: 'Sewa Ruangan', objek: 'Terminal - Terbuka tanpa AC', satuan: 'm2/bulan', tarif: 31000 },
+    { kode_tarif: 'TRF-RMG-IN-TT', jenis_layanan: 'Sewa Ruangan', objek: 'Terminal - Tertutup tanpa AC', satuan: 'm2/bulan', tarif: 48000 },
+    { kode_tarif: 'TRF-RMG-IN-TBAC', jenis_layanan: 'Sewa Ruangan', objek: 'Terminal - Terbuka dengan AC', satuan: 'm2/bulan', tarif: 65000 },
+    { kode_tarif: 'TRF-RMG-IN-TTAC', jenis_layanan: 'Sewa Ruangan', objek: 'Terminal - Tertutup dengan AC', satuan: 'm2/bulan', tarif: 72000 }
+  ];
+
+  const createdTariffs = {};
+  for (const t of tariffsData) {
+    const tariff = await prisma.master_tariffs.upsert({
+      where: { kode_tarif: t.kode_tarif },
+      update: {},
+      create: { ...t, status: 'Active' }
+    });
+    createdTariffs[t.kode_tarif] = tariff;
+  }
+
+  const assetsData = [
+
+    {
+      kode_aset: 'TIM-HGR-01',
+      jenis_aset: 'Hanggar',
+      nama_aset: 'Hanggar A - Mozes Kilangin',
+      airport_id: createdAirports['TIM'].id,
+      zone_id: createdZones['TIM']['HNGR'].id,
+      lokasi: 'Sisi Timur Apron',
+      luas: 2500,
+      satuan: 'm²',
+      kapasitas: '3 Pesawat Narrow Body',
+      kondisi: 'Baik',
+      status: 'Available',
+      master_tariff_id: null,
+      spesifikasi_detail: {
+        tinggi_bangunan: '20 Meter',
+        kapasitas_pesawat: '3 Pesawat Narrow Body (Boeing 737 / Airbus A320)',
+        jenis_pesawat: 'Boeing 737, ATR 72, Twin Otter',
+        fasilitas_listrik: '30.000 VA (3 Phase)',
+        fasilitas_air: 'PAM & Sumur Bor',
+        pintu_hanggar: 'Motorized Sliding Door (Lebar 45m)',
+        apron_connection: 'Akses Langsung ke Taxiway Alpha',
+        workshop: 'Tersedia (2 Ruang)',
+        office: 'Tersedia (1 Ruang Manager, 1 Staff)',
+        storage: 'Gudang Suku Cadang',
+        toilet: '4 Toilet',
+        fire_safety: 'Hydrant, Fire Extinguisher, Smoke Detector',
+        fasilitas_lainnya: 'CCTV 24 Jam'
+      }
+    },
+    {
+      kode_aset: 'TIM-HGR-02',
+      jenis_aset: 'Hanggar',
+      nama_aset: 'Hanggar B (Perintis) - Mozes Kilangin',
+      airport_id: createdAirports['TIM'].id,
+      zone_id: createdZones['TIM']['HNGR'].id,
+      lokasi: 'Sisi Barat Apron',
+      luas: 1200,
+      satuan: 'm²',
+      kapasitas: '4 Pesawat Perintis',
+      kondisi: 'Baik',
+      status: 'Available',
+      master_tariff_id: null,
+      spesifikasi_detail: {
+        tinggi_bangunan: '12 Meter',
+        kapasitas_pesawat: '4 Pesawat Perintis (Grand Caravan / Twin Otter)',
+        jenis_pesawat: 'Cessna Grand Caravan, Twin Otter, Pilatus',
+        fasilitas_listrik: '15.000 VA',
+        fasilitas_air: 'Sumur Bor',
+        pintu_hanggar: 'Manual Sliding Door',
+        apron_connection: 'Akses Taxiway Bravo',
+        workshop: 'Tersedia (1 Ruang)',
+        office: 'Tersedia (1 Ruang)',
+        storage: 'Gudang Kecil',
+        toilet: '2 Toilet',
+        fire_safety: 'Fire Extinguisher, Smoke Detector',
+        fasilitas_lainnya: '-'
+      }
+    },
+
+    {
+      kode_aset: 'DJJ-HGR-01',
+      jenis_aset: 'Hanggar',
+      nama_aset: 'Hanggar Utama Sentani',
+      airport_id: createdAirports['DJJ'].id,
+      zone_id: createdZones['DJJ']['HNGR'].id,
+      lokasi: 'Sektor Selatan',
+      luas: 3000,
+      satuan: 'm²',
+      kapasitas: '2 Pesawat Wide Body / 4 Narrow Body',
+      kondisi: 'Baik',
+      status: 'Available',
+      master_tariff_id: null,
+      spesifikasi_detail: {
+        tinggi_bangunan: '25 Meter',
+        kapasitas_pesawat: '2 Wide Body atau 4 Narrow Body',
+        jenis_pesawat: 'Boeing 767, Airbus A330, B737, A320',
+        fasilitas_listrik: '50.000 VA (3 Phase)',
+        fasilitas_air: 'PDAM',
+        pintu_hanggar: 'Motorized Bi-fold Door',
+        apron_connection: 'Akses Langsung Apron Cargo',
+        workshop: 'Tersedia (Area Khusus Engine)',
+        office: 'Tersedia (2 Lantai)',
+        storage: 'Gudang Besar Berpendingin',
+        toilet: '6 Toilet + Shower',
+        fire_safety: 'Foam System, Hydrant, Sprinkler',
+        fasilitas_lainnya: 'Ruang Briefing, Lounge'
+      }
+    },
+    {
+      kode_aset: 'DJJ-HGR-02',
+      jenis_aset: 'Hanggar',
+      nama_aset: 'Hanggar Helikopter Sentani',
+      airport_id: createdAirports['DJJ'].id,
+      zone_id: createdZones['DJJ']['HNGR'].id,
+      lokasi: 'Heliport Area',
+      luas: 800,
+      satuan: 'm²',
+      kapasitas: '3 Helikopter Medium',
+      kondisi: 'Rusak Ringan',
+      status: 'Maintenance',
+      master_tariff_id: null,
+      spesifikasi_detail: {
+        tinggi_bangunan: '10 Meter',
+        kapasitas_pesawat: '3 Helikopter',
+        jenis_pesawat: 'Bell 412, AS350, MD500',
+        fasilitas_listrik: '10.000 VA',
+        fasilitas_air: 'Sumur Bor',
+        pintu_hanggar: 'Manual Sliding Door',
+        apron_connection: 'Akses Helipad',
+        workshop: 'Mini Workshop',
+        office: '1 Ruang',
+        storage: 'Gudang Sparepart Heli',
+        toilet: '1 Toilet',
+        fire_safety: 'Fire Extinguisher',
+        fasilitas_lainnya: 'Windsock Khusus'
+      }
+    }
+  ];
+
+  for (const asset of assetsData) {
+    await prisma.assets.upsert({
+      where: { kode_aset: asset.kode_aset },
+      update: asset,
+      create: asset
+    });
+    console.log(`Asset ensured: ${asset.kode_aset} - ${asset.nama_aset}`);
+  }
+
+  console.log('Seeding Master Data finished.');
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
+
+--- FILE: prisma\seed_tariffs.js ---
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+async function main() {
+  console.log('Seeding Master Tariffs...');
+
+  const tariffsToSeed = [
+    {
+      kode_tarif: 'TRF-HGR-C208',
+      jenis_layanan: 'Sewa Hanggar',
+      objek: 'Cessna Caravan C208',
+      satuan: 'unit pesawat per malam',
+      tarif: 3500000,
+      dasar_hukum: 'Perbup No. 25 Tahun 2024 Lampiran Halaman 18'
+    },
+    {
+      kode_tarif: 'TRF-HGR-PAC750',
+      jenis_layanan: 'Sewa Hanggar',
+      objek: 'PAC 750 XL',
+      satuan: 'unit pesawat per malam',
+      tarif: 3500000,
+      dasar_hukum: 'Perbup No. 25 Tahun 2024 Lampiran Halaman 18'
+    },
+    {
+      kode_tarif: 'TRF-HGR-DHC6',
+      jenis_layanan: 'Sewa Hanggar',
+      objek: 'DHC-6 Series',
+      satuan: 'unit pesawat per malam',
+      tarif: 4500000,
+      dasar_hukum: 'Perbup No. 25 Tahun 2024 Lampiran Halaman 18'
+    },
+    {
+      kode_tarif: 'TRF-HGR-ATR',
+      jenis_layanan: 'Sewa Hanggar',
+      objek: 'ATR Series',
+      satuan: 'unit pesawat per malam',
+      tarif: 6000000,
+      dasar_hukum: 'Perbup No. 25 Tahun 2024 Lampiran Halaman 18'
+    },
+    {
+      kode_tarif: 'TRF-HGR-AS350',
+      jenis_layanan: 'Sewa Hanggar',
+      objek: 'Helicopter AS350 Series',
+      satuan: 'unit pesawat per malam',
+      tarif: 3500000,
+      dasar_hukum: 'Perbup No. 25 Tahun 2024 Lampiran Halaman 18'
+    },
+    {
+      kode_tarif: 'TRF-HGR-BELL407',
+      jenis_layanan: 'Sewa Hanggar',
+      objek: 'Helicopter Bell 206 - Bell 407 Series',
+      satuan: 'unit pesawat per malam',
+      tarif: 3500000,
+      dasar_hukum: 'Perbup No. 25 Tahun 2024 Lampiran Halaman 18'
+    },
+    {
+      kode_tarif: 'TRF-HGR-BELL412',
+      jenis_layanan: 'Sewa Hanggar',
+      objek: 'Helicopter Bell 412 - Bell 212',
+      satuan: 'unit pesawat per malam',
+      tarif: 4500000,
+      dasar_hukum: 'Perbup No. 25 Tahun 2024 Lampiran Halaman 18'
+    },
+    {
+      kode_tarif: 'TRF-HGR-KAMOV',
+      jenis_layanan: 'Sewa Hanggar',
+      objek: 'Helicopter Kamov - MI',
+      satuan: 'unit pesawat per malam',
+      tarif: 6000000,
+      dasar_hukum: 'Perbup No. 25 Tahun 2024 Lampiran Halaman 18'
+    },
+    {
+      kode_tarif: 'TRF-RNG-IN-TA',
+      jenis_layanan: 'Penggunaan Ruangan',
+      objek: 'Di Dalam Terminal - Terbuka tanpa AC',
+      satuan: 'm2 per bulan',
+      tarif: 31000,
+      dasar_hukum: 'Perbup No. 25 Tahun 2024 Lampiran Halaman 19'
+    },
+    {
+      kode_tarif: 'TRF-RNG-IN-TA-AC',
+      jenis_layanan: 'Penggunaan Ruangan',
+      objek: 'Di Dalam Terminal - Tertutup tanpa AC',
+      satuan: 'm2 per bulan',
+      tarif: 48000,
+      dasar_hukum: 'Perbup No. 25 Tahun 2024 Lampiran Halaman 19'
+    },
+    {
+      kode_tarif: 'TRF-RNG-IN-B-AC',
+      jenis_layanan: 'Penggunaan Ruangan',
+      objek: 'Di Dalam Terminal - Terbuka dengan AC',
+      satuan: 'm2 per bulan',
+      tarif: 65000,
+      dasar_hukum: 'Perbup No. 25 Tahun 2024 Lampiran Halaman 19'
+    },
+    {
+      kode_tarif: 'TRF-RNG-IN-T-AC',
+      jenis_layanan: 'Penggunaan Ruangan',
+      objek: 'Di Dalam Terminal - Tertutup dengan AC',
+      satuan: 'm2 per bulan',
+      tarif: 72000,
+      dasar_hukum: 'Perbup No. 25 Tahun 2024 Lampiran Halaman 19'
+    }
+  ];
+
+  for (const tariff of tariffsToSeed) {
+    const exists = await prisma.master_tariffs.findUnique({
+      where: { kode_tarif: tariff.kode_tarif }
+    });
+
+    if (!exists) {
+      await prisma.master_tariffs.create({ data: tariff });
+      console.log(`Created tariff: ${tariff.kode_tarif}`);
+    } else {
+      console.log(`Tariff ${tariff.kode_tarif} already exists.`);
+    }
+  }
+
+  console.log('Seeding Master Tariffs finished.');
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
+
+--- FILE: src\config\db.js ---
+const { PrismaClient } = require('@prisma/client');
+
+const globalForPrisma = global;
+const prisma = globalForPrisma.prisma || new PrismaClient();
+
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+
+module.exports = prisma;
+
+--- FILE: src\controllers\aircraftController.js ---
+const aircraftService = require('../services/aircraftService');
+
+exports.getAircrafts = async (req, res, next) => {
+  try {
+    const aircrafts = await aircraftService.fetchAircrafts();
+    res.status(200).json({ success: true, data: aircrafts });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getAircraft = async (req, res, next) => {
+  try {
+    const aircraft = await aircraftService.fetchAircraftById(req.params.id);
+    res.status(200).json({ success: true, data: aircraft });
+  } catch (error) {
+    error.statusCode = 404;
+    next(error);
+  }
+};
+
+exports.createAircraft = async (req, res, next) => {
+  try {
+    const newAircraft = await aircraftService.addAircraft(req.body);
+    res.status(201).json({ success: true, message: 'Aircraft created', data: newAircraft });
+  } catch (error) {
+    next(error);
+  }
+};
+exports.getTenantAircrafts = async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) {
+      return res.status(403).json({ success: false, message: 'User is not a tenant' });
+    }
+    const aircrafts = await aircraftService.fetchAircraftsByTenant(tenantId);
+    res.status(200).json({ success: true, data: aircrafts });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.createTenantAircraft = async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) {
+      return res.status(403).json({ success: false, message: 'User is not a tenant' });
+    }
+    const payload = { ...req.body, tenant_id: tenantId };
+    const newAircraft = await aircraftService.addAircraft(payload);
+    res.status(201).json({ success: true, message: 'Aircraft created successfully', data: newAircraft });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateTenantAircraft = async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) {
+      return res.status(403).json({ success: false, message: 'User is not a tenant' });
+    }
+    const updatedAircraft = await aircraftService.updateAircraft(req.params.id, tenantId, req.body);
+    res.status(200).json({ success: true, message: 'Aircraft updated successfully', data: updatedAircraft });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.deleteTenantAircraft = async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) {
+      return res.status(403).json({ success: false, message: 'User is not a tenant' });
+    }
+    await aircraftService.deleteAircraft(req.params.id, tenantId);
+    res.status(200).json({ success: true, message: 'Aircraft deleted successfully' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+--- FILE: src\controllers\airportController.js ---
+const airportService = require('../services/airportService');
+
+const getAllAirports = async (req, res, next) => {
+  try {
+    const airports = await airportService.getAllAirports();
+    res.json({
+      status: 'success',
+      data: airports
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getAirportById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const airport = await airportService.getAirportById(id);
+    res.json({
+      status: 'success',
+      data: airport
+    });
+  } catch (error) {
+    if (error.message === 'Airport not found') {
+      return res.status(404).json({ status: 'error', message: error.message });
+    }
+    next(error);
+  }
+};
+
+const createAirport = async (req, res, next) => {
+  try {
+    const newAirport = await airportService.createAirport(req.body);
+    res.status(201).json({
+      status: 'success',
+      data: newAirport
+    });
+  } catch (error) {
+    if (error.message === 'Kode Bandara already exists') {
+      return res.status(400).json({ status: 'error', message: error.message });
+    }
+    next(error);
+  }
+};
+
+const updateAirport = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const airport = await airportService.updateAirport(id, req.body);
+    res.json({
+      status: 'success',
+      data: airport
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteAirport = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    await airportService.deleteAirport(id);
+    res.json({
+      status: 'success',
+      message: 'Airport deleted successfully'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = {
+  getAllAirports,
+  getAirportById,
+  createAirport,
+  updateAirport,
+  deleteAirport
+};
+
+--- FILE: src\controllers\assetController.js ---
+const assetService = require('../services/assetService');
+
+exports.getAssets = async (req, res, next) => {
+  try {
+    let airportId = null;
+    if (req.user && req.user.role.toLowerCase() === 'admin') {
+      airportId = req.user.airport_id;
+    }
+    const assets = await assetService.fetchAssets(airportId);
+    res.status(200).json({ success: true, data: assets });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getAsset = async (req, res, next) => {
+  try {
+    const asset = await assetService.fetchAssetById(req.params.id);
+    res.status(200).json({ success: true, data: asset });
+  } catch (error) {
+    error.statusCode = 404;
+    next(error);
+  }
+};
+
+exports.createAsset = async (req, res, next) => {
+  try {
+    const newAsset = await assetService.addAsset(req.body);
+    res.status(201).json({ success: true, message: 'Asset created', data: newAsset });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateAsset = async (req, res, next) => {
+  try {
+    const updatedAsset = await assetService.updateAsset(req.params.id, req.body);
+    res.status(200).json({ success: true, message: 'Asset updated', data: updatedAsset });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.deleteAsset = async (req, res, next) => {
+  try {
+    await assetService.deleteAsset(req.params.id);
+    res.status(200).json({ success: true, message: 'Asset deleted' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+--- FILE: src\controllers\authController.js ---
+const authService = require('../services/authService');
+const joi = require('joi');
+
+exports.register = async (req, res, next) => {
+  try {
+
+    const schema = joi.object({
+      username: joi.string().min(3).required(),
+      password: joi.string().min(6).required(),
+      nama_perusahaan: joi.string().required(),
+      nib: joi.string().allow('', null),
+      npwp: joi.string().allow('', null),
+      alamat: joi.string().allow('', null),
+      pic: joi.string().required(),
+      nomor_telepon: joi.string().required(),
+      email: joi.string().email().required()
+    });
+
+    const { error } = schema.validate(req.body);
+    if (error) {
+      const err = new Error(error.details[0].message);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const result = await authService.registerTenant(req.body);
+    res.status(201).json({
+      success: true,
+      message: 'Pendaftaran berhasil. Silakan tunggu verifikasi Admin.',
+      data: result
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.login = async (req, res, next) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      const err = new Error('Username dan Password wajib diisi');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const result = await authService.loginUser(username, password);
+    res.status(200).json({
+      success: true,
+      message: 'Login berhasil',
+      data: result
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.logout = async (req, res, next) => {
+  try {
+
+    res.status(200).json({
+      success: true,
+      message: 'Logout berhasil'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getMe = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const userProfile = await authService.getUserProfile(userId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Profil berhasil diambil',
+      data: userProfile
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+--- FILE: src\controllers\contractController.js ---
+const contractService = require('../services/contractService');
+
+exports.getAllContracts = async (req, res, next) => {
+  try {
+    const contracts = await contractService.getAllContracts();
+    res.status(200).json({ success: true, data: contracts });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getContractById = async (req, res, next) => {
+  try {
+    const contract = await contractService.getContractById(req.params.id);
+    res.status(200).json({ success: true, data: contract });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateContract = async (req, res, next) => {
+  try {
+    const updatedContract = await contractService.updateContract(req.params.id, req.body);
+    res.status(200).json({ success: true, message: 'Contract updated', data: updatedContract });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getTenantContracts = async (req, res, next) => {
+  try {
+    const contracts = await contractService.getContractsByTenant(req.user.tenant_id);
+    res.status(200).json({ success: true, data: contracts });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getTenantContractById = async (req, res, next) => {
+  try {
+    const contract = await contractService.getContractByIdAndTenant(req.params.id, req.user.tenant_id);
+    res.status(200).json({ success: true, data: contract });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateContractStatusByTenant = async (req, res, next) => {
+  try {
+    const { status, tenant_signature } = req.body;
+
+    if (!['Approved', 'Rejected', 'Waiting Payment'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status update by Tenant' });
+    }
+    const updatedContract = await contractService.updateContractStatusByTenant(req.params.id, req.user.tenant_id, status, tenant_signature);
+    res.status(200).json({ success: true, message: 'Contract status updated', data: updatedContract });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.extendContract = async (req, res, next) => {
+  try {
+    const { duration_months } = req.body;
+    const newApplication = await contractService.extendContract(req.params.id, req.user.tenant_id, duration_months);
+    res.status(201).json({ success: true, message: 'Extension requested successfully', data: newApplication });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.terminateContract = async (req, res, next) => {
+  try {
+    const updatedContract = await contractService.terminateContract(req.params.id);
+    res.status(200).json({ success: true, message: 'Contract terminated successfully', data: updatedContract });
+  } catch (error) {
+    next(error);
+  }
+};
+
+--- FILE: src\controllers\cronController.js ---
+const { generateMonthlyInvoices } = require('../workers/billingCron');
+
+const triggerBilling = async (req, res, next) => {
+    try {
+        const result = await generateMonthlyInvoices();
+
+        if (result.success) {
+            res.status(200).json({
+                message: result.message,
+                generatedCount: result.generatedCount
+            });
+        } else {
+            res.status(500).json({
+                message: 'Failed to generate monthly invoices',
+                error: result.error
+            });
+        }
+    } catch (error) {
+        next(error);
+    }
+};
+
+module.exports = {
+    triggerBilling
+};
+
+--- FILE: src\controllers\invoiceController.js ---
+const invoiceService = require('../services/invoiceService');
+const tenantService = require('../services/tenantService');
+
+exports.getAllInvoices = async (req, res, next) => {
+  try {
+    const invoices = await invoiceService.getAllInvoices();
+    res.json({ success: true, data: invoices });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getTenantInvoices = async (req, res, next) => {
+  try {
+    const tenant = await tenantService.getTenantByUserId(req.user.id);
+    if (!tenant) return res.status(404).json({ message: 'Tenant not found' });
+
+    const invoices = await invoiceService.getTenantInvoices(tenant.id);
+    res.json({ success: true, data: invoices });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getInvoiceById = async (req, res, next) => {
+  try {
+    const invoice = await invoiceService.getInvoiceById(req.params.id);
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+    res.json({ success: true, data: invoice });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.uploadReceipt = async (req, res, next) => {
+  try {
+    const method = req.body.payment_method;
+    const filename = req.file ? req.file.filename : null;
+    if (!filename) {
+      return res.status(400).json({ success: false, message: 'Bukti bayar diperlukan' });
+    }
+    const invoice = await invoiceService.uploadReceipt(req.params.id, filename, method);
+    res.json({ success: true, data: invoice, message: 'Bukti bayar berhasil diunggah' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.verifyPayment = async (req, res, next) => {
+  try {
+    const invoice = await invoiceService.verifyPayment(req.params.id);
+    res.json({ success: true, data: invoice, message: 'Pembayaran berhasil diverifikasi' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+--- FILE: src\controllers\parkingController.js ---
+const parkingService = require('../services/parkingService');
+const Joi = require('joi');
+
+const createBook = async (req, res, next) => {
+  try {
+    const schema = Joi.object({
+      kode_buku: Joi.string().trim().max(50).required().messages({
+        'string.empty': 'Kode buku tidak boleh kosong',
+        'any.required': 'Kode buku wajib diisi'
+      }),
+      jenis_karcis: Joi.string().trim().max(50).required().messages({
+        'string.empty': 'Jenis karcis tidak boleh kosong',
+        'any.required': 'Jenis karcis wajib dipilih'
+      }),
+      seri_awal: Joi.number().integer().positive().required().messages({
+        'number.base': 'Seri awal harus berupa angka',
+        'number.positive': 'Seri awal harus lebih besar dari 0',
+        'any.required': 'Seri awal wajib diisi'
+      }),
+      seri_akhir: Joi.number().integer().min(Joi.ref('seri_awal')).required().messages({
+        'number.base': 'Seri akhir harus berupa angka',
+        'number.min': 'Seri akhir harus lebih besar atau sama dengan seri awal',
+        'any.required': 'Seri akhir wajib diisi'
+      }),
+      nominal_per_lembar: Joi.number().positive().required().messages({
+        'number.base': 'Nominal per lembar harus berupa angka',
+        'number.positive': 'Nominal per lembar harus lebih dari 0',
+        'any.required': 'Nominal per lembar wajib diisi'
+      }),
+      airport_id: Joi.number().integer().optional()
+    });
+
+    const { error, value } = schema.validate(req.body);
+    if (error) {
+      const err = new Error(error.details[0].message);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const newBook = await parkingService.createTicketBook(req.user, value);
+    res.status(201).json({
+      status: 'success',
+      message: 'Buku karcis baru berhasil ditambahkan ke inventaris',
+      data: newBook
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getAvailableBooks = async (req, res, next) => {
+  try {
+    const { airport_id } = req.query;
+    const books = await parkingService.getAvailableBooks(req.user, airport_id);
+    res.json({
+      status: 'success',
+      data: books
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getAllBooks = async (req, res, next) => {
+  try {
+    const { airport_id, status, jenis_karcis } = req.query;
+    const books = await parkingService.getAllBooks(req.user, { airport_id, status, jenis_karcis });
+    res.json({
+      status: 'success',
+      data: books
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const dispatchBooklet = async (req, res, next) => {
+  try {
+    const schema = Joi.object({
+      book_id: Joi.number().integer().positive().required().messages({
+        'number.base': 'ID Buku karcis harus berupa angka',
+        'any.required': 'Buku karcis wajib dipilih'
+      }),
+      warden_name: Joi.string().trim().min(2).max(100).required().messages({
+        'string.empty': 'Nama juru parkir tidak boleh kosong',
+        'string.min': 'Nama juru parkir minimal 2 karakter',
+        'any.required': 'Nama juru parkir wajib diisi'
+      }),
+      dispatched_serial_start: Joi.number().integer().positive().required().messages({
+        'number.base': 'Seri awal penugasan harus berupa angka',
+        'any.required': 'Seri awal penugasan wajib diisi'
+      }),
+      dispatched_serial_end: Joi.number().integer().min(Joi.ref('dispatched_serial_start')).required().messages({
+        'number.base': 'Seri akhir penugasan harus berupa angka',
+        'number.min': 'Seri akhir penugasan harus >= seri awal penugasan',
+        'any.required': 'Seri akhir penugasan wajib diisi'
+      })
+    });
+
+    const { error, value } = schema.validate(req.body);
+    if (error) {
+      const err = new Error(error.details[0].message);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const handover = await parkingService.dispatchBooklet(req.user, value);
+    res.status(201).json({
+      status: 'success',
+      message: 'Buku karcis berhasil dialokasikan ke juru parkir',
+      data: handover
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const settleHandover = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const schema = Joi.object({
+      last_returned_serial: Joi.number().integer().positive().required().messages({
+        'number.base': 'Nomor seri sisa karcis harus berupa angka',
+        'any.required': 'Nomor seri sisa karcis wajib diisi'
+      }),
+      actual_cash_settled: Joi.number().min(0).required().messages({
+        'number.base': 'Jumlah uang fisik yang disetor harus berupa angka',
+        'number.min': 'Uang fisik yang disetor tidak boleh minus',
+        'any.required': 'Jumlah uang fisik yang disetor wajib diisi'
+      }),
+      notes: Joi.string().allow('', null).optional()
+    });
+
+    const { error, value } = schema.validate(req.body);
+    if (error) {
+      const err = new Error(error.details[0].message);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const settled = await parkingService.settleHandover(req.user, id, value);
+    res.json({
+      status: 'success',
+      message: 'Setoran dan rekonsiliasi karcis berhasil diselesaikan',
+      data: settled
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getActiveHandovers = async (req, res, next) => {
+  try {
+    const { airport_id } = req.query;
+    const active = await parkingService.getActiveHandovers(req.user, airport_id);
+    res.json({
+      status: 'success',
+      data: active
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getHandoverHistory = async (req, res, next) => {
+  try {
+    const { airport_id, status, warden_name, start_date, end_date } = req.query;
+    const history = await parkingService.getHandoverHistory(req.user, {
+      airport_id,
+      status,
+      warden_name,
+      start_date,
+      end_date
+    });
+    res.json({
+      status: 'success',
+      data: history
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getReconciliationReport = async (req, res, next) => {
+  try {
+    const { airport_id, start_date, end_date } = req.query;
+    const report = await parkingService.getReconciliationReport(req.user, {
+      airport_id,
+      start_date,
+      end_date
+    });
+    res.json({
+      status: 'success',
+      data: report
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = {
+  createBook,
+  getAvailableBooks,
+  getAllBooks,
+  dispatchBooklet,
+  settleHandover,
+  getActiveHandovers,
+  getHandoverHistory,
+  getReconciliationReport
+};
+
+--- FILE: src\controllers\rentalController.js ---
+const rentalService = require('../services/rentalService');
+
+exports.createRentalApplication = async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) {
+      return res.status(403).json({ success: false, message: 'User is not a tenant' });
+    }
+    const newApp = await rentalService.createApplication(tenantId, req.body);
+    res.status(201).json({ success: true, message: 'Application created successfully', data: newApp });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getTenantApplications = async (req, res, next) => {
+  try {
+    const tenantId = req.user.tenant_id;
+    if (!tenantId) {
+      return res.status(403).json({ success: false, message: 'User is not a tenant' });
+    }
+    const apps = await rentalService.getApplicationsByTenant(tenantId);
+    res.status(200).json({ success: true, data: apps });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getAllApplications = async (req, res, next) => {
+  try {
+    const airportId = req.user.role.toLowerCase() === 'superadmin' ? null : req.user.airport_id;
+    const apps = await rentalService.getAllApplications(airportId);
+    res.status(200).json({ success: true, data: apps });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getApplicationById = async (req, res, next) => {
+  try {
+    const app = await rentalService.getApplicationById(req.params.id);
+    res.status(200).json({ success: true, data: app });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateApplicationStatus = async (req, res, next) => {
+  try {
+    const { status, asset_id } = req.body;
+    const updatedApp = await rentalService.updateApplicationStatus(req.params.id, status, asset_id);
+    res.status(200).json({ success: true, message: `Application ${status}`, data: updatedApp });
+  } catch (error) {
+    next(error);
+  }
+};
+
+--- FILE: src\controllers\tariffController.js ---
+const tariffService = require('../services/tariffService');
+
+const getAllTariffs = async (req, res, next) => {
+  try {
+    const tariffs = await tariffService.getAllTariffs();
+    res.json({
+      status: 'success',
+      data: tariffs
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getTariffById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const tariff = await tariffService.getTariffById(id);
+    res.json({
+      status: 'success',
+      data: tariff
+    });
+  } catch (error) {
+    if (error.message === 'Tariff not found') {
+      return res.status(404).json({ status: 'error', message: error.message });
+    }
+    next(error);
+  }
+};
+
+const createTariff = async (req, res, next) => {
+  try {
+    const newTariff = await tariffService.createTariff(req.body);
+    res.status(201).json({
+      status: 'success',
+      data: newTariff
+    });
+  } catch (error) {
+    if (error.message === 'Kode Tarif already exists') {
+      return res.status(400).json({ status: 'error', message: error.message });
+    }
+    next(error);
+  }
+};
+
+const updateTariff = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const tariff = await tariffService.updateTariff(id, req.body);
+    res.json({
+      status: 'success',
+      data: tariff
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteTariff = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    await tariffService.deleteTariff(id);
+    res.json({
+      status: 'success',
+      message: 'Tariff deleted successfully'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = {
+  getAllTariffs,
+  getTariffById,
+  createTariff,
+  updateTariff,
+  deleteTariff
+};
+
+--- FILE: src\controllers\tenantController.js ---
+const tenantService = require('../services/tenantService');
+
+exports.getTenants = async (req, res, next) => {
+  try {
+    const tenants = await tenantService.fetchTenants();
+    res.status(200).json({ success: true, data: tenants });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getTenant = async (req, res, next) => {
+  try {
+    const tenant = await tenantService.fetchTenantById(req.params.id);
+    res.status(200).json({ success: true, data: tenant });
+  } catch (error) {
+    error.statusCode = 404;
+    next(error);
+  }
+};
+
+exports.createTenant = async (req, res, next) => {
+  try {
+    const newTenant = await tenantService.addTenant(req.body);
+    res.status(201).json({ success: true, message: 'Tenant created', data: newTenant });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.verifyTenant = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!status) {
+      return res.status(400).json({ success: false, message: 'Status is required' });
+    }
+
+    const updatedTenant = await tenantService.updateTenantStatus(id, status);
+    res.status(200).json({
+      success: true,
+      message: `Tenant status updated to ${status}`,
+      data: updatedTenant
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.uploadLegalitas = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { documentType } = req.body;
+
+    if (!documentType || !req.file) {
+      return res.status(400).json({ success: false, message: 'Document type and file are required' });
+    }
+
+    const filePath = `/uploads/legalitas/${req.file.filename}`;
+    const updatedTenant = await tenantService.uploadLegalitas(id, documentType, filePath);
+
+    res.status(200).json({
+      success: true,
+      message: 'Document uploaded successfully',
+      data: updatedTenant
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+--- FILE: src\controllers\warningController.js ---
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+const getAllWarnings = async (req, res, next) => {
+  try {
+    const warnings = await prisma.warnings.findMany({
+      include: {
+        tenants: true,
+        invoices: true
+      },
+      orderBy: { created_at: 'desc' }
+    });
+
+    res.json({
+      success: true,
+      data: warnings
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getTenantWarnings = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+
+    const tenant = await prisma.tenants.findFirst({
+      where: { user_id: userId }
+    });
+
+    if (!tenant) {
+      return res.status(404).json({ success: false, message: 'Tenant not found for this user' });
+    }
+
+    const warnings = await prisma.warnings.findMany({
+      where: { tenant_id: tenant.id },
+      include: { invoices: true },
+      orderBy: { created_at: 'desc' }
+    });
+
+    res.json({
+      success: true,
+      data: warnings
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = {
+  getAllWarnings,
+  getTenantWarnings
+};
+
+--- FILE: src\controllers\zoneController.js ---
+const zoneService = require('../services/zoneService');
+
+const getAllZones = async (req, res, next) => {
+  try {
+    const { airport_id } = req.query;
+    const zones = await zoneService.getAllZones(airport_id);
+    res.json({
+      status: 'success',
+      data: zones
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getZoneById = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const zone = await zoneService.getZoneById(id);
+    res.json({
+      status: 'success',
+      data: zone
+    });
+  } catch (error) {
+    if (error.message === 'Zone not found') {
+      return res.status(404).json({ status: 'error', message: error.message });
+    }
+    next(error);
+  }
+};
+
+const createZone = async (req, res, next) => {
+  try {
+    const newZone = await zoneService.createZone(req.body);
+    res.status(201).json({
+      status: 'success',
+      data: newZone
+    });
+  } catch (error) {
+    if (error.message === 'Kode Zona already exists') {
+      return res.status(400).json({ status: 'error', message: error.message });
+    }
+    next(error);
+  }
+};
+
+const updateZone = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const zone = await zoneService.updateZone(id, req.body);
+    res.json({
+      status: 'success',
+      data: zone
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteZone = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    await zoneService.deleteZone(id);
+    res.json({
+      status: 'success',
+      message: 'Zone deleted successfully'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = {
+  getAllZones,
+  getZoneById,
+  createZone,
+  updateZone,
+  deleteZone
+};
+
+--- FILE: src\jobs\contractMonitor.js ---
+const cron = require('node-cron');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+const invoiceService = require('../services/invoiceService');
+
+const checkContractExpirations = async () => {
+  console.log('--- CRON JOB: Checking contract expirations ---');
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const thirtyDaysFromNow = new Date(today);
+    thirtyDaysFromNow.setDate(today.getDate() + 30);
+
+    const activeContracts = await prisma.contracts.findMany({
+      where: {
+        status: { in: ['Active', 'Expiring'] },
+        end_date: { not: null }
+      }
+    });
+
+    let expiredCount = 0;
+    let expiringCount = 0;
+
+    for (const contract of activeContracts) {
+      const endDate = new Date(contract.end_date);
+      endDate.setHours(0, 0, 0, 0);
+
+      if (endDate < today) {
+        if (contract.status !== 'Expired') {
+          await prisma.contracts.update({
+            where: { id: contract.id },
+            data: { status: 'Expired' }
+          });
+          expiredCount++;
+        }
+      }
+
+      else if (endDate <= thirtyDaysFromNow) {
+        if (contract.status !== 'Expiring') {
+          await prisma.contracts.update({
+            where: { id: contract.id },
+            data: { status: 'Expiring' }
+          });
+          expiringCount++;
+        }
+      }
+    }
+
+    console.log(`Cron Complete: Marked ${expiringCount} as Expiring, ${expiredCount} as Expired.`);
+  } catch (error) {
+    console.error('Error running contract monitor cron job:', error);
+  }
+};
+
+const generatePeriodicBilling = async () => {
+  console.log('--- CRON JOB: Generating Periodic Billing ---');
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const activeContracts = await prisma.contracts.findMany({
+      where: { status: 'Active' }
+    });
+
+    let generatedCount = 0;
+
+    for (const contract of activeContracts) {
+
+      const latestInvoice = await prisma.invoices.findFirst({
+        where: { contract_id: contract.id },
+        orderBy: { created_at: 'desc' }
+      });
+
+      if (!latestInvoice) continue;
+
+      const lastBillingDate = new Date(latestInvoice.created_at);
+      lastBillingDate.setHours(0, 0, 0, 0);
+
+      let nextBillingDate = new Date(lastBillingDate);
+
+      if (contract.periode_pembayaran === 'Bulanan') {
+        nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
+      } else if (contract.periode_pembayaran === 'Tahunan') {
+        nextBillingDate.setFullYear(nextBillingDate.getFullYear() + 1);
+      } else {
+        continue;
+      }
+
+      if (today >= nextBillingDate) {
+
+        const endDate = contract.end_date ? new Date(contract.end_date) : null;
+        if (endDate) {
+          endDate.setHours(0, 0, 0, 0);
+          if (today > endDate) continue;
+        }
+
+        console.log(`Generating periodic invoice for Contract ID: ${contract.id}`);
+        await invoiceService.generateInvoice(contract.id, true);
+        generatedCount++;
+      }
+    }
+
+    console.log(`Periodic Billing Complete: Generated ${generatedCount} new invoices.`);
+  } catch (error) {
+    console.error('Error running periodic billing cron job:', error);
+  }
+};
+
+const checkArrearsAndGenerateWarnings = async () => {
+  console.log('--- CRON JOB: Checking arrears and generating warnings ---');
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const unpaidInvoices = await prisma.invoices.findMany({
+      where: { status: 'Unpaid', due_date: { not: null } },
+      include: { contracts: true }
+    });
+
+    let sp1Count = 0;
+    let sp2Count = 0;
+
+    for (const invoice of unpaidInvoices) {
+      const dueDate = new Date(invoice.due_date);
+      dueDate.setHours(0, 0, 0, 0);
+
+      const diffTime = Math.abs(today - dueDate);
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+      if (today > dueDate) {
+        if (diffDays >= 60) {
+
+          const existingSP2 = await prisma.warnings.findFirst({
+            where: { invoice_id: invoice.id, type: 'SP 2' }
+          });
+
+          if (!existingSP2) {
+            const warningNumber = `SP2-${Date.now()}-${invoice.id}`;
+            await prisma.warnings.create({
+              data: {
+                warning_number: warningNumber,
+                tenant_id: invoice.tenant_id,
+                invoice_id: invoice.id,
+                type: 'SP 2',
+                message: `Tagihan No. ${invoice.invoice_number} telah menunggak lebih dari 60 hari. Akses layanan dibatasi.`,
+                status: 'Sent'
+              }
+            });
+
+            await prisma.tenants.update({
+              where: { id: invoice.tenant_id },
+              data: { status_pembayaran: 'Restricted' }
+            });
+
+            sp2Count++;
+          }
+        } else if (diffDays >= 30) {
+
+          const existingSP1 = await prisma.warnings.findFirst({
+            where: { invoice_id: invoice.id, type: 'SP 1' }
+          });
+
+          if (!existingSP1) {
+            const warningNumber = `SP1-${Date.now()}-${invoice.id}`;
+            await prisma.warnings.create({
+              data: {
+                warning_number: warningNumber,
+                tenant_id: invoice.tenant_id,
+                invoice_id: invoice.id,
+                type: 'SP 1',
+                message: `Tagihan No. ${invoice.invoice_number} telah menunggak lebih dari 30 hari. Segera lakukan pelunasan untuk menghindari sanksi lanjutan.`,
+                status: 'Sent'
+              }
+            });
+
+            sp1Count++;
+          }
+        }
+      }
+    }
+
+    console.log(`Arrears Check Complete: Generated ${sp1Count} SP1 and ${sp2Count} SP2.`);
+  } catch (error) {
+    console.error('Error running arrears check cron job:', error);
+  }
+};
+
+const initCronJobs = () => {
+
+  cron.schedule('0 0 * * *', () => {
+    checkContractExpirations();
+    generatePeriodicBilling();
+    checkArrearsAndGenerateWarnings();
+  });
+  console.log('Cron Jobs Initialized: Contract Monitor, Periodic Billing & Risk Control (runs daily at midnight)');
+};
+
+module.exports = {
+  initCronJobs,
+  checkContractExpirations,
+  generatePeriodicBilling,
+  checkArrearsAndGenerateWarnings
+};
+
+--- FILE: src\middlewares\authMiddleware.js ---
+const jwt = require('jsonwebtoken');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'secret_key_mars_2026';
+
+const verifyToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const error = new Error('Akses ditolak. Token tidak ditemukan');
+    error.statusCode = 401;
+    return next(error);
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    const error = new Error('Token tidak valid atau sudah kadaluarsa');
+    error.statusCode = 401;
+    next(error);
+  }
+};
+
+const authorizeRoles = (...roles) => {
+  return (req, res, next) => {
+    const userRole = req.user?.role?.toLowerCase();
+    const hasRole = roles.some(r => r.toLowerCase() === userRole);
+    if (!req.user || !hasRole) {
+      const error = new Error(`Role Anda (${req.user?.role}) tidak memiliki izin untuk mengakses resource ini`);
+      error.statusCode = 403;
+      return next(error);
+    }
+    next();
+  };
+};
+
+module.exports = {
+  authMiddleware: verifyToken,
+  authorizeRoles
+};
+
+--- FILE: src\middlewares\errorHandler.js ---
+
+const errorHandler = (err, req, res, next) => {
+
+  const statusCode = err.statusCode || 500;
+
+  console.error(`[Error] ${err.message}`);
+  if (process.env.NODE_ENV !== 'production') {
+    console.error(err.stack);
+  }
+
+  res.status(statusCode).json({
+    success: false,
+    message: err.message || 'Terjadi kesalahan pada server',
+
+    ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
+  });
+};
+
+module.exports = errorHandler;
+
+--- FILE: src\middlewares\upload.js ---
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+const uploadDir = path.join(__dirname, '../../public/uploads/legalitas');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    cb(null, file.fieldname + '-' + uniqueSuffix + ext);
+  }
+});
+
+const fileFilter = (req, file, cb) => {
+  const allowedMimeTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
+  if (allowedMimeTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Invalid file type. Only PDF, JPG, and PNG are allowed.'), false);
+  }
+};
+
+const upload = multer({
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024
+  }
+});
+
+module.exports = upload;
+
+--- FILE: src\routes\aircraftRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const aircraftController = require('../controllers/aircraftController');
+const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddleware');
+
+router.get('/tenant', authMiddleware, authorizeRoles('Tenant'), aircraftController.getTenantAircrafts);
+router.post('/tenant', authMiddleware, authorizeRoles('Tenant'), aircraftController.createTenantAircraft);
+router.put('/tenant/:id', authMiddleware, authorizeRoles('Tenant'), aircraftController.updateTenantAircraft);
+router.delete('/tenant/:id', authMiddleware, authorizeRoles('Tenant'), aircraftController.deleteTenantAircraft);
+
+router.get('/', aircraftController.getAircrafts);
+router.get('/:id', aircraftController.getAircraft);
+router.post('/', aircraftController.createAircraft);
+
+module.exports = router;
+
+--- FILE: src\routes\airportRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const airportController = require('../controllers/airportController');
+const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddleware');
+
+router.use(authMiddleware);
+
+router
+  .route('/')
+  .get(airportController.getAllAirports)
+  .post(authorizeRoles('admin', 'superadmin'), airportController.createAirport);
+
+router
+  .route('/:id')
+  .get(airportController.getAirportById)
+  .put(authorizeRoles('admin', 'superadmin'), airportController.updateAirport)
+  .delete(authorizeRoles('admin', 'superadmin'), airportController.deleteAirport);
+
+module.exports = router;
+
+--- FILE: src\routes\assetRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const assetController = require('../controllers/assetController');
+const { authMiddleware } = require('../middlewares/authMiddleware');
+
+router.use(authMiddleware);
+
+router.get('/', assetController.getAssets);
+router.get('/:id', assetController.getAsset);
+router.post('/', assetController.createAsset);
+router.put('/:id', assetController.updateAsset);
+router.delete('/:id', assetController.deleteAsset);
+
+module.exports = router;
+
+--- FILE: src\routes\authRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const authController = require('../controllers/authController');
+
+const { authMiddleware } = require('../middlewares/authMiddleware');
+
+router.post('/register', authController.register);
+router.post('/login', authController.login);
+router.post('/logout', authController.logout);
+router.get('/me', authMiddleware, authController.getMe);
+
+module.exports = router;
+
+--- FILE: src\routes\contractRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const contractController = require('../controllers/contractController');
+const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddleware');
+
+router.get('/tenant', authMiddleware, authorizeRoles('Tenant'), contractController.getTenantContracts);
+router.get('/tenant/:id', authMiddleware, authorizeRoles('Tenant'), contractController.getTenantContractById);
+router.put('/tenant/:id/status', authMiddleware, authorizeRoles('Tenant'), contractController.updateContractStatusByTenant);
+router.post('/tenant/:id/extend', authMiddleware, authorizeRoles('Tenant'), contractController.extendContract);
+
+router.get('/', authMiddleware, authorizeRoles('Admin'), contractController.getAllContracts);
+router.get('/:id', authMiddleware, authorizeRoles('Admin'), contractController.getContractById);
+router.put('/:id', authMiddleware, authorizeRoles('Admin'), contractController.updateContract);
+router.put('/:id/terminate', authMiddleware, authorizeRoles('Admin'), contractController.terminateContract);
+
+module.exports = router;
+
+--- FILE: src\routes\cronRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const cronController = require('../controllers/cronController');
+
+router.post('/trigger-billing', cronController.triggerBilling);
+
+module.exports = router;
+
+--- FILE: src\routes\index.js ---
+const express = require('express');
+const router = express.Router();
+const authRoutes = require('./authRoutes');
+const tenantRoutes = require('./tenantRoutes');
+const assetRoutes = require('./assetRoutes');
+const aircraftRoutes = require('./aircraftRoutes');
+const rentalRoutes = require('./rentalRoutes');
+const contractRoutes = require('./contractRoutes');
+const invoiceRoutes = require('./invoiceRoutes');
+const warningRoutes = require('./warningRoutes');
+const tariffRoutes = require('./tariffRoutes');
+const airportRoutes = require('./airportRoutes');
+const zoneRoutes = require('./zoneRoutes');
+const parkingRoutes = require('./parkingRoutes');
+
+router.use('/auth', authRoutes);
+
+router.use('/tenants', tenantRoutes);
+router.use('/assets', assetRoutes);
+router.use('/aircrafts', aircraftRoutes);
+router.use('/rentals', rentalRoutes);
+router.use('/contracts', contractRoutes);
+router.use('/invoices', invoiceRoutes);
+router.use('/warnings', warningRoutes);
+router.use('/tariffs', tariffRoutes);
+router.use('/airports', airportRoutes);
+router.use('/zones', zoneRoutes);
+router.use('/parking', parkingRoutes);
+
+module.exports = router;
+
+
+--- FILE: src\routes\invoiceRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const invoiceController = require('../controllers/invoiceController');
+const { authMiddleware: protect, authorizeRoles: authorize } = require('../middlewares/authMiddleware');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+const uploadDir = path.join(__dirname, '../../public/uploads/receipts');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    cb(null, 'receipt-' + uniqueSuffix + ext);
+  }
+});
+const upload = multer({ storage: storage });
+
+router.get('/', protect, authorize('Admin', 'Super Admin'), invoiceController.getAllInvoices);
+router.get('/tenant', protect, authorize('Tenant'), invoiceController.getTenantInvoices);
+router.get('/:id', protect, invoiceController.getInvoiceById);
+router.post('/:id/upload-receipt', protect, authorize('Tenant'), upload.single('receipt'), invoiceController.uploadReceipt);
+router.post('/:id/verify', protect, authorize('Admin', 'Super Admin'), invoiceController.verifyPayment);
+
+module.exports = router;
+
+--- FILE: src\routes\parkingRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const parkingController = require('../controllers/parkingController');
+const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddleware');
+
+router.use(authMiddleware);
+router.use(authorizeRoles('admin', 'superadmin', 'dishub', 'eksekutif'));
+
+router
+  .route('/books')
+  .get(parkingController.getAllBooks)
+  .post(authorizeRoles('admin', 'superadmin'), parkingController.createBook);
+
+router.get('/books/available', parkingController.getAvailableBooks);
+
+router
+  .route('/handovers')
+  .post(authorizeRoles('admin', 'superadmin'), parkingController.dispatchBooklet);
+
+router.get('/handovers/active', parkingController.getActiveHandovers);
+router.get('/handovers/history', parkingController.getHandoverHistory);
+
+router.put('/handovers/:id/settle', authorizeRoles('admin', 'superadmin'), parkingController.settleHandover);
+
+router.get('/reports/reconciliation', parkingController.getReconciliationReport);
+
+module.exports = router;
+
+--- FILE: src\routes\rentalRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const rentalController = require('../controllers/rentalController');
+const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddleware');
+
+router.post('/', authMiddleware, authorizeRoles('Tenant'), rentalController.createRentalApplication);
+router.get('/tenant', authMiddleware, authorizeRoles('Tenant'), rentalController.getTenantApplications);
+
+router.get('/admin', authMiddleware, authorizeRoles('Admin'), rentalController.getAllApplications);
+router.get('/:id', authMiddleware, rentalController.getApplicationById);
+router.put('/:id/status', authMiddleware, authorizeRoles('Admin'), rentalController.updateApplicationStatus);
+
+module.exports = router;
+
+--- FILE: src\routes\tariffRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const tariffController = require('../controllers/tariffController');
+const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddleware');
+
+router.use(authMiddleware);
+
+router
+  .route('/')
+  .get(tariffController.getAllTariffs)
+  .post(authorizeRoles('admin', 'superadmin'), tariffController.createTariff);
+
+router
+  .route('/:id')
+  .get(tariffController.getTariffById)
+  .put(authorizeRoles('admin', 'superadmin'), tariffController.updateTariff)
+  .delete(authorizeRoles('admin', 'superadmin'), tariffController.deleteTariff);
+
+module.exports = router;
+
+--- FILE: src\routes\tenantRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const tenantController = require('../controllers/tenantController');
+const upload = require('../middlewares/upload');
+const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddleware');
+
+router.use(authMiddleware);
+
+router.get('/', authorizeRoles('admin', 'superadmin'), tenantController.getTenants);
+router.get('/:id', tenantController.getTenant);
+router.post('/', authorizeRoles('admin', 'superadmin'), tenantController.createTenant);
+router.put('/:id/verify', authorizeRoles('superadmin'), tenantController.verifyTenant);
+router.post('/:id/legalitas', upload.single('file'), tenantController.uploadLegalitas);
+
+module.exports = router;
+
+--- FILE: src\routes\warningRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const warningController = require('../controllers/warningController');
+const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddleware');
+
+router.get('/', authMiddleware, authorizeRoles('Admin', 'Dinas'), warningController.getAllWarnings);
+
+router.get('/tenant', authMiddleware, warningController.getTenantWarnings);
+
+module.exports = router;
+
+--- FILE: src\routes\zoneRoutes.js ---
+const express = require('express');
+const router = express.Router();
+const zoneController = require('../controllers/zoneController');
+const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddleware');
+
+router.use(authMiddleware);
+
+router
+  .route('/')
+  .get(zoneController.getAllZones)
+  .post(authorizeRoles('admin', 'superadmin'), zoneController.createZone);
+
+router
+  .route('/:id')
+  .get(zoneController.getZoneById)
+  .put(authorizeRoles('admin', 'superadmin'), zoneController.updateZone)
+  .delete(authorizeRoles('admin', 'superadmin'), zoneController.deleteZone);
+
+module.exports = router;
+
+--- FILE: src\services\aircraftService.js ---
+const prisma = require('../config/db');
+
+exports.fetchAircrafts = async () => {
+  return await prisma.aircrafts.findMany({
+    orderBy: { created_at: 'desc' }
+  });
+};
+
+exports.fetchAircraftsByTenant = async (tenantId) => {
+  return await prisma.aircrafts.findMany({
+    where: { tenant_id: tenantId },
+    orderBy: { created_at: 'desc' }
+  });
+};
+
+exports.fetchAircraftById = async (id) => {
+  const aircraft = await prisma.aircrafts.findUnique({
+    where: { id: parseInt(id) }
+  });
+  if (!aircraft) throw new Error('Aircraft not found');
+  return aircraft;
+};
+
+exports.addAircraft = async (data) => {
+  const { registration_number, aircraft_type, mtow, status, tenant_id, foto, capacity } = data;
+  return await prisma.aircrafts.create({
+    data: {
+      registration_number,
+      aircraft_type,
+      mtow: mtow ? parseFloat(mtow) : null,
+      status: status || 'aktif',
+      tenant_id: tenant_id ? parseInt(tenant_id) : null,
+      capacity: capacity ? parseInt(capacity) : null,
+      foto: foto || null
+    }
+  });
+};
+
+exports.updateAircraft = async (id, tenantId, data) => {
+  const aircraft = await prisma.aircrafts.findUnique({ where: { id: parseInt(id) } });
+
+  if (!aircraft) {
+    const err = new Error('Pesawat tidak ditemukan');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  if (aircraft.tenant_id !== tenantId) {
+    const err = new Error('Anda tidak memiliki akses untuk mengubah data ini');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const { registration_number, aircraft_type, mtow, capacity, foto } = data;
+
+  const updateData = {};
+  if (registration_number) updateData.registration_number = registration_number;
+  if (aircraft_type) updateData.aircraft_type = aircraft_type;
+  if (mtow !== undefined) updateData.mtow = mtow ? parseFloat(mtow) : null;
+  if (capacity !== undefined) updateData.capacity = capacity ? parseInt(capacity) : null;
+  if (foto !== undefined) updateData.foto = foto || null;
+
+  return await prisma.aircrafts.update({
+    where: { id: parseInt(id) },
+    data: updateData
+  });
+};
+
+exports.deleteAircraft = async (id, tenantId) => {
+  const aircraft = await prisma.aircrafts.findUnique({ where: { id: parseInt(id) } });
+
+  if (!aircraft) {
+    const err = new Error('Pesawat tidak ditemukan');
+    err.statusCode = 404;
+    throw err;
+  }
+
+  if (aircraft.tenant_id !== tenantId) {
+    const err = new Error('Anda tidak memiliki akses untuk menghapus data ini');
+    err.statusCode = 403;
+    throw err;
+  }
+
+  return await prisma.aircrafts.delete({
+    where: { id: parseInt(id) }
+  });
+};
+
+--- FILE: src\services\airportService.js ---
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+const getAllAirports = async () => {
+  return await prisma.airports.findMany({
+    include: {
+      zones: true
+    }
+  });
+};
+
+const getAirportById = async (id) => {
+  const airport = await prisma.airports.findUnique({
+    where: { id: parseInt(id) },
+    include: {
+      zones: true
+    }
+  });
+  if (!airport) throw new Error('Airport not found');
+  return airport;
+};
+
+const createAirport = async (data) => {
+  const { kode_bandara, nama_bandara, lokasi, deskripsi } = data;
+
+  const existing = await prisma.airports.findUnique({
+    where: { kode_bandara }
+  });
+
+  if (existing) {
+    throw new Error('Kode Bandara already exists');
+  }
+
+  return await prisma.airports.create({
+    data: {
+      kode_bandara,
+      nama_bandara,
+      lokasi,
+      deskripsi
+    }
+  });
+};
+
+const updateAirport = async (id, data) => {
+  const { kode_bandara, nama_bandara, lokasi, deskripsi } = data;
+  return await prisma.airports.update({
+    where: { id: parseInt(id) },
+    data: {
+      kode_bandara,
+      nama_bandara,
+      lokasi,
+      deskripsi,
+      updated_at: new Date()
+    }
+  });
+};
+
+const deleteAirport = async (id) => {
+  return await prisma.airports.delete({
+    where: { id: parseInt(id) }
+  });
+};
+
+module.exports = {
+  getAllAirports,
+  getAirportById,
+  createAirport,
+  updateAirport,
+  deleteAirport
+};
+
+--- FILE: src\services\assetService.js ---
+const prisma = require('../config/db');
+
+exports.fetchAssets = async (airportId) => {
+  let whereClause = {};
+  if (airportId) {
+    whereClause = { airport_id: parseInt(airportId) };
+  }
+  return await prisma.assets.findMany({
+    where: whereClause,
+    include: { master_tariffs: true, airports: true, zones: true },
+    orderBy: { id: 'asc' }
+  });
+};
+
+exports.fetchAssetById = async (id) => {
+  const asset = await prisma.assets.findUnique({
+    where: { id: parseInt(id) },
+    include: { master_tariffs: true, airports: true, zones: true }
+  });
+  if (!asset) throw new Error('Asset not found');
+  return asset;
+};
+
+exports.addAsset = async (assetData) => {
+  return await prisma.assets.create({
+    data: assetData
+  });
+};
+
+exports.updateAsset = async (id, assetData) => {
+  return await prisma.assets.update({
+    where: { id: parseInt(id) },
+    data: assetData
+  });
+};
+
+exports.deleteAsset = async (id) => {
+  return await prisma.assets.delete({
+    where: { id: parseInt(id) }
+  });
+};
+
+--- FILE: src\services\authService.js ---
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const prisma = require('../config/db');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'secret_key_mars_2026';
+
+exports.registerTenant = async (data) => {
+  const { username, password, nama_perusahaan, nib, npwp, alamat, pic, nomor_telepon, email } = data;
+
+  const existingUser = await prisma.users.findUnique({
+    where: { username }
+  });
+
+  if (existingUser) {
+    const error = new Error('Username sudah digunakan');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const salt = await bcrypt.genSalt(10);
+  const password_hash = await bcrypt.hash(password, salt);
+
+  const result = await prisma.$transaction(async (tx) => {
+    const newUser = await tx.users.create({
+      data: {
+        username,
+        password_hash,
+        role: 'Tenant',
+      }
+    });
+
+    const newTenant = await tx.tenants.create({
+      data: {
+        user_id: newUser.id,
+        nama_perusahaan,
+        nib,
+        npwp,
+        alamat,
+        pic,
+        nomor_telepon,
+        email,
+        status_verifikasi: 'Pending'
+      }
+    });
+
+    return { user: { id: newUser.id, username: newUser.username, role: newUser.role }, tenant: newTenant };
+  });
+
+  return result;
+};
+
+exports.loginUser = async (username, password) => {
+  const user = await prisma.users.findUnique({
+    where: { username },
+    include: {
+      tenants: true
+    }
+  });
+
+  if (!user) {
+    const error = new Error('Username atau Password salah');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const isMatch = await bcrypt.compare(password, user.password_hash);
+  if (!isMatch) {
+    const error = new Error('Username atau Password salah');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const tenantData = user.tenants && user.tenants.length > 0 ? user.tenants[0] : null;
+
+  const payload = {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    airport_id: user.airport_id,
+    tenant_id: tenantData ? tenantData.id : null,
+    tenant_id_str: tenantData ? tenantData.tenant_id_str : null,
+    status_verifikasi: tenantData ? tenantData.status_verifikasi : null
+  };
+
+  const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
+
+  return { token, user: payload };
+};
+
+exports.getUserProfile = async (userId) => {
+  const user = await prisma.users.findUnique({
+    where: { id: userId },
+    include: {
+      tenants: true
+    }
+  });
+
+  if (!user) {
+    const error = new Error('User tidak ditemukan');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const tenantData = user.tenants && user.tenants.length > 0 ? user.tenants[0] : null;
+
+  return {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    airport_id: user.airport_id,
+    tenant_id: tenantData ? tenantData.id : null,
+    tenant_id_str: tenantData ? tenantData.tenant_id_str : null,
+    nama_perusahaan: tenantData ? tenantData.nama_perusahaan : null,
+    status_verifikasi: tenantData ? tenantData.status_verifikasi : null
+  };
+};
+
+--- FILE: src\services\contractService.js ---
+const prisma = require('../config/db');
+const invoiceService = require('./invoiceService');
+
+exports.getAllContracts = async () => {
+  return await prisma.contracts.findMany({
+    include: {
+      tenants: true,
+      assets: true,
+      rental_applications: true
+    },
+    orderBy: { created_at: 'desc' }
+  });
+};
+
+exports.getContractById = async (id) => {
+  const contract = await prisma.contracts.findUnique({
+    where: { id: parseInt(id) },
+    include: {
+      tenants: true,
+      assets: true,
+      rental_applications: true
+    }
+  });
+  if (!contract) throw new Error('Contract not found');
+  return contract;
+};
+
+exports.updateContract = async (id, payload) => {
+  return await prisma.contracts.update({
+    where: { id: parseInt(id) },
+    data: {
+      contract_number: payload.contract_number,
+      deposit_jaminan: payload.deposit_jaminan !== undefined ? parseFloat(payload.deposit_jaminan) : undefined,
+      total_amount: payload.total_amount !== undefined ? parseFloat(payload.total_amount) : undefined,
+      status: payload.status,
+      fasilitas: payload.fasilitas !== undefined ? payload.fasilitas : undefined,
+      denda: payload.denda !== undefined ? payload.denda : undefined,
+      periode_pembayaran: payload.periode_pembayaran !== undefined ? payload.periode_pembayaran : undefined,
+      admin_signature: payload.admin_signature !== undefined ? payload.admin_signature : undefined
+    }
+  });
+};
+
+exports.getContractsByTenant = async (tenantId) => {
+  return await prisma.contracts.findMany({
+    where: { tenant_id: parseInt(tenantId) },
+    include: {
+      assets: true,
+      rental_applications: true
+    },
+    orderBy: { id: 'desc' }
+  });
+};
+
+exports.getContractByIdAndTenant = async (id, tenantId) => {
+  const contract = await prisma.contracts.findFirst({
+    where: {
+      id: parseInt(id),
+      tenant_id: parseInt(tenantId)
+    },
+    include: {
+      tenants: true,
+      assets: true,
+      rental_applications: true
+    }
+  });
+  if (!contract) throw new Error('Contract not found or access denied');
+  return contract;
+};
+
+exports.updateContractStatusByTenant = async (id, tenantId, status, tenant_signature) => {
+  const contract = await this.getContractByIdAndTenant(id, tenantId);
+
+  if (contract.status !== 'Review') {
+    throw new Error('Only contracts in Review status can be Approved or Rejected by tenant');
+  }
+
+  const updatedContract = await prisma.contracts.update({
+    where: { id: parseInt(id) },
+    data: {
+      status,
+      tenant_signature: tenant_signature !== undefined ? tenant_signature : undefined
+    }
+  });
+
+  if (status === 'Waiting Payment' || status === 'Approved') {
+
+    await invoiceService.generateInvoice(id);
+  }
+
+  return updatedContract;
+};
+
+exports.extendContract = async (id, tenantId, durationMonths) => {
+  const contract = await this.getContractByIdAndTenant(id, tenantId);
+
+  if (contract.status !== 'Expiring' && contract.status !== 'Active') {
+    throw new Error('Only Active or Expiring contracts can be extended');
+  }
+
+  const count = await prisma.rental_applications.count();
+  const applicationNumber = `EXT-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
+
+  const oldEndDate = contract.end_date ? new Date(contract.end_date) : new Date();
+  const newStartDate = new Date(oldEndDate);
+  newStartDate.setDate(newStartDate.getDate() + 1);
+
+  const newEndDate = new Date(newStartDate);
+  newEndDate.setMonth(newEndDate.getMonth() + parseInt(durationMonths));
+
+  const newApplication = await prisma.rental_applications.create({
+    data: {
+      application_number: applicationNumber,
+      tenant_id: parseInt(tenantId),
+      asset_id: contract.asset_id,
+      purpose: `Perpanjangan Kontrak No: ${contract.contract_number}`,
+      start_date: newStartDate,
+      end_date: newEndDate,
+      status: 'Pending'
+    }
+  });
+
+  return newApplication;
+};
+
+exports.terminateContract = async (id) => {
+  const contract = await prisma.contracts.findUnique({
+    where: { id: parseInt(id) }
+  });
+
+  if (!contract) throw new Error('Contract not found');
+
+  const updatedContract = await prisma.contracts.update({
+    where: { id: parseInt(id) },
+    data: { status: 'Terminated' }
+  });
+
+  if (contract.asset_id) {
+    await prisma.assets.update({
+      where: { id: contract.asset_id },
+      data: { status: 'Available' }
+    });
+  }
+
+  return updatedContract;
+};
+
+--- FILE: src\services\invoiceService.js ---
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+exports.getAllInvoices = async () => {
+  return await prisma.invoices.findMany({
+    include: {
+      contracts: {
+        include: {
+          assets: true
+        }
+      },
+      tenants: true
+    },
+    orderBy: {
+      created_at: 'desc'
+    }
+  });
+};
+
+exports.getTenantInvoices = async (tenantId) => {
+  return await prisma.invoices.findMany({
+    where: { tenant_id: parseInt(tenantId) },
+    include: {
+      contracts: {
+        include: {
+          assets: true
+        }
+      }
+    },
+    orderBy: {
+      created_at: 'desc'
+    }
+  });
+};
+
+exports.getInvoiceById = async (id) => {
+  return await prisma.invoices.findUnique({
+    where: { id: parseInt(id) },
+    include: {
+      contracts: true,
+      tenants: true
+    }
+  });
+};
+
+exports.generateInvoice = async (contractId, isPeriodic = false) => {
+  const contract = await prisma.contracts.findUnique({
+    where: { id: parseInt(contractId) }
+  });
+
+  if (!contract) {
+    throw new Error('Contract not found');
+  }
+
+  if (!isPeriodic) {
+    const existingInvoice = await prisma.invoices.findFirst({
+      where: { contract_id: contract.id }
+    });
+    if (existingInvoice) {
+      return existingInvoice;
+    }
+  } else {
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const existingInvoiceToday = await prisma.invoices.findFirst({
+      where: {
+        contract_id: contract.id,
+        created_at: { gte: today }
+      }
+    });
+    if (existingInvoiceToday) {
+      return existingInvoiceToday;
+    }
+  }
+
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  let calculatedAmount = Number(contract.total_amount) || 0;
+
+  let invoicesToCreate = [];
+
+  if (contract.periode_pembayaran === 'Bulanan' && contract.start_date && contract.end_date) {
+    const start = new Date(contract.start_date);
+    const end = new Date(contract.end_date);
+    let months = (end.getFullYear() - start.getFullYear()) * 12;
+    months -= start.getMonth();
+    months += end.getMonth();
+    if (months <= 0) months = 1;
+    calculatedAmount = calculatedAmount / months;
+
+    const count = await prisma.invoices.count();
+
+    for (let i = 0; i < months; i++) {
+
+      const dueDate = new Date(start);
+      dueDate.setMonth(dueDate.getMonth() + i);
+      dueDate.setDate(dueDate.getDate() + 14);
+
+      const seq = String(count + i + 1).padStart(3, '0');
+      const invNumber = `SKRD/${year}/${month}/${seq}`;
+
+      let status = i === 0 ? 'Unpaid' : 'Scheduled';
+      let amount = calculatedAmount;
+      if (i === 0 && contract.deposit_jaminan) {
+         amount += Number(contract.deposit_jaminan);
+      }
+
+      invoicesToCreate.push({
+        invoice_number: invNumber,
+        contract_id: contract.id,
+        tenant_id: contract.tenant_id,
+        amount: amount,
+        due_date: dueDate,
+        status: status,
+        created_at: dueDate
+      });
+    }
+
+    await prisma.invoices.createMany({
+      data: invoicesToCreate
+    });
+
+    return await prisma.invoices.findFirst({
+       where: { contract_id: contract.id },
+       orderBy: { due_date: 'asc' }
+    });
+
+  } else {
+
+    if (contract.periode_pembayaran === 'Tahunan' && contract.start_date && contract.end_date) {
+      const start = new Date(contract.start_date);
+      const end = new Date(contract.end_date);
+      let years = end.getFullYear() - start.getFullYear();
+      if (years <= 0) years = 1;
+      calculatedAmount = calculatedAmount / years;
+    }
+
+    if (!isPeriodic && contract.deposit_jaminan) {
+      calculatedAmount += Number(contract.deposit_jaminan);
+    }
+
+    const count = await prisma.invoices.count();
+    const seq = String(count + 1).padStart(3, '0');
+    const invoiceNumber = `SKRD/${year}/${month}/${seq}`;
+
+    const dueDate = new Date();
+    dueDate.setDate(dueDate.getDate() + 14);
+
+    return await prisma.invoices.create({
+      data: {
+        invoice_number: invoiceNumber,
+        contract_id: contract.id,
+        tenant_id: contract.tenant_id,
+        amount: calculatedAmount,
+        due_date: dueDate,
+        status: 'Unpaid'
+      }
+    });
+  }
+};
+
+exports.uploadReceipt = async (id, filename, method) => {
+  const invoice = await prisma.invoices.update({
+    where: { id: parseInt(id) },
+    data: {
+      status: 'Pending Verification',
+      payment_receipt: filename,
+      payment_method: method
+    }
+  });
+  return invoice;
+};
+
+exports.verifyPayment = async (id) => {
+  const invoice = await prisma.invoices.update({
+    where: { id: parseInt(id) },
+    data: {
+      status: 'Paid',
+      payment_date: new Date()
+    }
+  });
+
+  await prisma.contracts.update({
+    where: { id: invoice.contract_id },
+    data: {
+      status: 'Active'
+    }
+  });
+
+  return invoice;
+};
+
+--- FILE: src\services\parkingService.js ---
+const prisma = require('../config/db');
+
+const createTicketBook = async (user, data) => {
+  const airport_id = user.airport_id || data.airport_id;
+  if (!airport_id) {
+    const error = new Error('Airport ID wajib disertakan');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const { kode_buku, jenis_karcis, seri_awal, seri_akhir, nominal_per_lembar } = data;
+
+  const start = parseInt(seri_awal, 10);
+  const end = parseInt(seri_akhir, 10);
+  const nominal = parseFloat(nominal_per_lembar);
+
+  if (isNaN(start) || isNaN(end) || start <= 0 || end < start) {
+    const error = new Error('Nomor seri awal dan akhir tidak valid (seri akhir harus >= seri awal)');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (isNaN(nominal) || nominal <= 0) {
+    const error = new Error('Nominal per lembar harus lebih besar dari 0');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const existing = await prisma.parking_ticket_books.findUnique({
+    where: { kode_buku }
+  });
+
+  if (existing) {
+    const error = new Error(`Kode buku '${kode_buku}' sudah terdaftar`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const newBook = await prisma.parking_ticket_books.create({
+    data: {
+      airport_id,
+      kode_buku,
+      jenis_karcis,
+      seri_awal: start,
+      seri_akhir: end,
+      nominal_per_lembar: nominal,
+      status: 'STOK'
+    },
+    include: {
+      airports: {
+        select: { id: true, kode_bandara: true, nama_bandara: true }
+      }
+    }
+  });
+
+  return newBook;
+};
+
+const getAvailableBooks = async (user, filterAirportId) => {
+  const airport_id = user.airport_id || (filterAirportId ? parseInt(filterAirportId, 10) : undefined);
+
+  const whereClause = {
+    status: 'STOK'
+  };
+
+  if (airport_id) {
+    whereClause.airport_id = airport_id;
+  }
+
+  const books = await prisma.parking_ticket_books.findMany({
+    where: whereClause,
+    include: {
+      airports: {
+        select: { id: true, kode_bandara: true, nama_bandara: true }
+      },
+      handovers: {
+        orderBy: { id: 'desc' },
+        take: 1
+      }
+    },
+    orderBy: { id: 'desc' }
+  });
+
+  const mapped = books.map(book => {
+    const lastHandover = book.handovers && book.handovers.length > 0 ? book.handovers[0] : null;
+    const effectiveStart = (lastHandover && lastHandover.last_returned_serial)
+      ? lastHandover.last_returned_serial
+      : book.seri_awal;
+
+    const remainingSheets = (book.seri_akhir - effectiveStart) + 1;
+
+    return {
+      ...book,
+      effective_serial_start: effectiveStart,
+      remaining_sheets: Math.max(0, remainingSheets)
+    };
+  });
+
+  return mapped;
+};
+
+const getAllBooks = async (user, filters = {}) => {
+  const airport_id = user.airport_id || (filters.airport_id ? parseInt(filters.airport_id, 10) : undefined);
+
+  const whereClause = {};
+  if (airport_id) whereClause.airport_id = airport_id;
+  if (filters.status) whereClause.status = filters.status;
+  if (filters.jenis_karcis) whereClause.jenis_karcis = filters.jenis_karcis;
+
+  const books = await prisma.parking_ticket_books.findMany({
+    where: whereClause,
+    include: {
+      airports: {
+        select: { id: true, kode_bandara: true, nama_bandara: true }
+      },
+      _count: {
+        select: { handovers: true }
+      }
+    },
+    orderBy: { id: 'desc' }
+  });
+
+  return books;
+};
+
+const dispatchBooklet = async (user, data) => {
+  const { book_id, warden_name, dispatched_serial_start, dispatched_serial_end } = data;
+
+  const bookId = parseInt(book_id, 10);
+  const start = parseInt(dispatched_serial_start, 10);
+  const end = parseInt(dispatched_serial_end, 10);
+
+  if (!warden_name || warden_name.trim() === '') {
+    const error = new Error('Nama Juru Parkir wajib diisi');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const book = await prisma.parking_ticket_books.findUnique({
+    where: { id: bookId },
+    include: {
+      handovers: {
+        orderBy: { id: 'desc' },
+        take: 1
+      }
+    }
+  });
+
+  if (!book) {
+    const error = new Error('Buku karcis tidak ditemukan');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (user.airport_id && book.airport_id !== user.airport_id) {
+    const error = new Error('Akses ditolak: Buku karcis ini milik bandara lain');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  if (book.status !== 'STOK') {
+    const error = new Error(`Buku karcis tidak tersedia untuk dipinjamkan (Status saat ini: ${book.status})`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const lastHandover = book.handovers && book.handovers.length > 0 ? book.handovers[0] : null;
+  const effectiveStart = (lastHandover && lastHandover.last_returned_serial)
+    ? lastHandover.last_returned_serial
+    : book.seri_awal;
+
+  if (start !== effectiveStart) {
+    const error = new Error(`Nomor seri awal alokasi (${start}) tidak valid. Sistem mewajibkan seri awal terkunci persis pada seri sisa yang tersedia (${effectiveStart}) untuk mencegah karcis mengambang.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (end > book.seri_akhir || start > end) {
+    const error = new Error(`Nomor seri yang dialokasikan (${start} - ${end}) melampaui batas fisik buku karcis (${book.seri_awal} - ${book.seri_akhir})`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const updateResult = await tx.parking_ticket_books.updateMany({
+      where: {
+        id: book.id,
+        status: 'STOK'
+      },
+      data: {
+        status: 'ACTIVE',
+        updated_at: new Date()
+      }
+    });
+
+    if (updateResult.count === 0) {
+      const error = new Error('Buku karcis sedang dialokasikan oleh sesi admin lain (Concurrency Conflict). Silakan refresh halaman.');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const newHandover = await tx.parking_warden_handovers.create({
+      data: {
+        airport_id: book.airport_id,
+        book_id: book.id,
+        warden_name: warden_name.trim(),
+        dispatched_serial_start: start,
+        dispatched_serial_end: end,
+        status: 'DISTRIBUTED',
+        dispatch_time: new Date()
+      },
+      include: {
+        ticket_books: true,
+        airports: {
+          select: { id: true, kode_bandara: true, nama_bandara: true }
+        }
+      }
+    });
+
+    return newHandover;
+  });
+
+  return result;
+};
+
+const settleHandover = async (user, handoverId, data) => {
+  const hId = parseInt(handoverId, 10);
+  const { last_returned_serial, actual_cash_settled: rawActualCash, notes } = data;
+
+  const lastReturned = parseInt(last_returned_serial, 10);
+  const actualCash = parseFloat(rawActualCash);
+
+  if (isNaN(lastReturned)) {
+    const error = new Error('Nomor seri sisa karcis terakhir wajib diisi dengan angka');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (isNaN(actualCash) || actualCash < 0) {
+    const error = new Error('Nominal uang fisik yang disetor wajib diisi dan tidak boleh minus');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const handover = await prisma.parking_warden_handovers.findUnique({
+    where: { id: hId },
+    include: {
+      ticket_books: true
+    }
+  });
+
+  if (!handover) {
+    const error = new Error('Data penyerahan karcis tidak ditemukan');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (user.airport_id && handover.airport_id !== user.airport_id) {
+    const error = new Error('Akses ditolak: Data penyerahan karcis milik bandara lain');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  if (handover.status !== 'DISTRIBUTED') {
+    const error = new Error(`Penyerahan ini sudah berstatus ${handover.status} dan tidak dapat disettle ulang`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (lastReturned < handover.dispatched_serial_start || lastReturned > (handover.dispatched_serial_end + 1)) {
+    const error = new Error(`Nomor seri sisa karcis (${lastReturned}) tidak valid. Harus antara ${handover.dispatched_serial_start} s/d ${handover.dispatched_serial_end + 1}`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const sold_qty = lastReturned - handover.dispatched_serial_start;
+  const nominal_per_lembar = Math.round(parseFloat(handover.ticket_books.nominal_per_lembar));
+  const expected_amount = Math.round(sold_qty * nominal_per_lembar);
+  const actual_cash_settled = Math.round(actualCash);
+  const unmatched_amount = actual_cash_settled - expected_amount;
+
+  if (unmatched_amount < 0 && (!notes || notes.trim() === '')) {
+    const error = new Error(`Terjadi selisih kurang (defisit) sebesar Rp ${Math.abs(unmatched_amount).toLocaleString('id-ID')}. Kolom alasan/keterangan selisih wajib diisi.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const updatedHandover = await tx.parking_warden_handovers.update({
+      where: { id: hId },
+      data: {
+        last_returned_serial: lastReturned,
+        sold_qty,
+        expected_amount,
+        actual_cash_settled: actualCash,
+        unmatched_amount,
+        notes: notes ? notes.trim() : null,
+        status: 'SETTLED',
+        settle_time: new Date()
+      },
+      include: {
+        ticket_books: true,
+        airports: {
+          select: { id: true, kode_bandara: true, nama_bandara: true }
+        }
+      }
+    });
+
+    const isBookExhausted = lastReturned >= (handover.ticket_books.seri_akhir + 1);
+    const newBookStatus = isBookExhausted ? 'HABIS' : 'STOK';
+
+    await tx.parking_ticket_books.update({
+      where: { id: handover.book_id },
+      data: {
+        status: newBookStatus,
+        updated_at: new Date()
+      }
+    });
+
+    return updatedHandover;
+  });
+
+  return result;
+};
+
+const getActiveHandovers = async (user, filterAirportId) => {
+  const airport_id = user.airport_id || (filterAirportId ? parseInt(filterAirportId, 10) : undefined);
+
+  const whereClause = {
+    status: 'DISTRIBUTED'
+  };
+
+  if (airport_id) {
+    whereClause.airport_id = airport_id;
+  }
+
+  const handovers = await prisma.parking_warden_handovers.findMany({
+    where: whereClause,
+    include: {
+      ticket_books: true,
+      airports: {
+        select: { id: true, kode_bandara: true, nama_bandara: true }
+      }
+    },
+    orderBy: { dispatch_time: 'desc' }
+  });
+
+  return handovers;
+};
+
+const getHandoverHistory = async (user, filters = {}) => {
+  const airport_id = user.airport_id || (filters.airport_id ? parseInt(filters.airport_id, 10) : undefined);
+
+  const whereClause = {};
+  if (airport_id) whereClause.airport_id = airport_id;
+  if (filters.status) whereClause.status = filters.status;
+  if (filters.warden_name) {
+    whereClause.warden_name = { contains: filters.warden_name, mode: 'insensitive' };
+  }
+
+  if (filters.start_date || filters.end_date) {
+    whereClause.dispatch_time = {};
+    if (filters.start_date) {
+      whereClause.dispatch_time.gte = new Date(filters.start_date);
+    }
+    if (filters.end_date) {
+      const end = new Date(filters.end_date);
+      end.setHours(23, 59, 59, 999);
+      whereClause.dispatch_time.lte = end;
+    }
+  }
+
+  const handovers = await prisma.parking_warden_handovers.findMany({
+    where: whereClause,
+    include: {
+      ticket_books: true,
+      airports: {
+        select: { id: true, kode_bandara: true, nama_bandara: true }
+      }
+    },
+    orderBy: { dispatch_time: 'desc' }
+  });
+
+  return handovers;
+};
+
+const getReconciliationReport = async (user, filters = {}) => {
+  const airport_id = user.airport_id || (filters.airport_id ? parseInt(filters.airport_id, 10) : undefined);
+
+  const whereClause = {};
+  if (airport_id) whereClause.airport_id = airport_id;
+
+  if (filters.start_date || filters.end_date) {
+    whereClause.settle_time = {};
+    if (filters.start_date) {
+      whereClause.settle_time.gte = new Date(filters.start_date);
+    }
+    if (filters.end_date) {
+      const end = new Date(filters.end_date);
+      end.setHours(23, 59, 59, 999);
+      whereClause.settle_time.lte = end;
+    }
+  }
+
+  const allHandovers = await prisma.parking_warden_handovers.findMany({
+    where: whereClause,
+    include: {
+      ticket_books: true,
+      airports: {
+        select: { id: true, kode_bandara: true, nama_bandara: true }
+      }
+    },
+    orderBy: { settle_time: 'desc' }
+  });
+
+  const settledHandovers = allHandovers.filter(h => h.status === 'SETTLED');
+  const activeHandovers = allHandovers.filter(h => h.status === 'DISTRIBUTED');
+
+  let totalSoldQty = 0;
+  let totalExpectedAmount = 0;
+  let totalActualCash = 0;
+  let totalUnmatchedAmount = 0;
+  let deficitCount = 0;
+  let surplusCount = 0;
+  let balancedCount = 0;
+
+  settledHandovers.forEach(h => {
+    const sold = h.sold_qty || 0;
+    const exp = parseFloat(h.expected_amount || 0);
+    const act = parseFloat(h.actual_cash_settled || 0);
+    const unmatch = parseFloat(h.unmatched_amount || 0);
+
+    totalSoldQty += sold;
+    totalExpectedAmount += exp;
+    totalActualCash += act;
+    totalUnmatchedAmount += unmatch;
+
+    if (unmatch < 0) deficitCount++;
+    else if (unmatch > 0) surplusCount++;
+    else balancedCount++;
+  });
+
+  const wardenMap = {};
+  settledHandovers.forEach(h => {
+    const name = h.warden_name;
+    if (!wardenMap[name]) {
+      wardenMap[name] = {
+        warden_name: name,
+        shifts_count: 0,
+        total_sold: 0,
+        total_expected: 0,
+        total_actual: 0,
+        total_unmatched: 0,
+        deficits: 0
+      };
+    }
+    wardenMap[name].shifts_count += 1;
+    wardenMap[name].total_sold += (h.sold_qty || 0);
+    wardenMap[name].total_expected += parseFloat(h.expected_amount || 0);
+    wardenMap[name].total_actual += parseFloat(h.actual_cash_settled || 0);
+    const unmatch = Math.round(parseFloat(h.unmatched_amount || 0));
+    wardenMap[name].total_unmatched += unmatch;
+    if (unmatch < 0) wardenMap[name].deficits += 1;
+  });
+
+  const wardenBreakdown = Object.values(wardenMap).map(w => {
+    const wardenLeakagePct = w.total_expected > 0 ? (Math.abs(Math.min(0, w.total_unmatched)) / w.total_expected) * 100 : 0;
+    let risk_level = 'AMAN';
+    if (wardenLeakagePct > 1 || Math.abs(w.total_unmatched) >= 50000) {
+      risk_level = 'KRITIKAL';
+    } else if (w.total_unmatched < 0) {
+      risk_level = 'WASPADA';
+    }
+    return {
+      ...w,
+      leakage_pct: parseFloat(wardenLeakagePct.toFixed(2)),
+      risk_level
+    };
+  }).sort((a, b) => a.total_unmatched - b.total_unmatched);
+
+  const airportMap = {};
+  settledHandovers.forEach(h => {
+    const apCode = h.airports?.kode_bandara || 'UNKNOWN';
+    const apName = h.airports?.nama_bandara || apCode;
+    if (!airportMap[apCode]) {
+      airportMap[apCode] = {
+        kode_bandara: apCode,
+        nama_bandara: apName,
+        total_sold: 0,
+        total_expected: 0,
+        total_actual: 0,
+        total_unmatched: 0
+      };
+    }
+    airportMap[apCode].total_sold += (h.sold_qty || 0);
+    airportMap[apCode].total_expected += parseFloat(h.expected_amount || 0);
+    airportMap[apCode].total_actual += parseFloat(h.actual_cash_settled || 0);
+    airportMap[apCode].total_unmatched += parseFloat(h.unmatched_amount || 0);
+  });
+
+  const airportBreakdown = Object.values(airportMap);
+
+  const vehicleMap = {};
+  settledHandovers.forEach(h => {
+    const jenis = h.ticket_books?.jenis_karcis || 'Lainnya';
+    if (!vehicleMap[jenis]) {
+      vehicleMap[jenis] = {
+        jenis_karcis: jenis,
+        total_sold: 0,
+        total_amount: 0
+      };
+    }
+    vehicleMap[jenis].total_sold += (h.sold_qty || 0);
+    vehicleMap[jenis].total_amount += parseFloat(h.expected_amount || 0);
+  });
+
+  const vehicleBreakdown = Object.values(vehicleMap);
+
+  const leakageRatePct = totalExpectedAmount > 0
+    ? Math.abs(Math.min(0, totalUnmatchedAmount)) / totalExpectedAmount * 100
+    : 0;
+
+  let auditStatus = 'AMAN';
+  if (leakageRatePct > 1) {
+    auditStatus = 'KRITIKAL';
+  } else if (totalUnmatchedAmount < 0) {
+    auditStatus = 'WASPADA';
+  }
+
+  return {
+    summary: {
+      total_active_shifts: activeHandovers.length,
+      total_settled_shifts: settledHandovers.length,
+      total_sold_qty: totalSoldQty,
+      total_expected_amount: totalExpectedAmount,
+      total_actual_cash: totalActualCash,
+      total_unmatched_amount: totalUnmatchedAmount,
+      leakage_rate_pct: parseFloat(leakageRatePct.toFixed(2)),
+      audit_status: auditStatus,
+      deficit_count: deficitCount,
+      surplus_count: surplusCount,
+      balanced_count: balancedCount
+    },
+    warden_breakdown: wardenBreakdown,
+    airport_breakdown: airportBreakdown,
+    vehicle_breakdown: vehicleBreakdown,
+    recent_settlements: settledHandovers.slice(0, 15)
+  };
+};
+
+module.exports = {
+  createTicketBook,
+  getAvailableBooks,
+  getAllBooks,
+  dispatchBooklet,
+  settleHandover,
+  getActiveHandovers,
+  getHandoverHistory,
+  getReconciliationReport
+};
+
+--- FILE: src\services\rentalService.js ---
+const prisma = require('../config/db');
+
+const generateApplicationNumber = async () => {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+
+  const lastApp = await prisma.rental_applications.findFirst({
+    where: {
+      application_number: {
+        startsWith: `REQ/MARS/${year}/${month}/`
+      }
+    },
+    orderBy: {
+      id: 'desc'
+    }
+  });
+
+  let nextNum = 1;
+  if (lastApp) {
+    const parts = lastApp.application_number.split('/');
+    const lastNum = parseInt(parts[parts.length - 1], 10);
+    nextNum = lastNum + 1;
+  }
+
+  const formattedNum = String(nextNum).padStart(4, '0');
+  return `REQ/MARS/${year}/${month}/${formattedNum}`;
+};
+
+const toRoman = (num) => {
+  const romanNumerals = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
+  return romanNumerals[num] || String(num);
+};
+
+const getDocumentCode = (jenisAset) => {
+  const map = {
+    'Hanggar': 'SKH',
+    'Kantor': 'SKK',
+    'Office': 'SKK',
+    'Apron': 'SKA',
+    'Gudang': 'SKG',
+    'Kargo': 'SKG',
+    'Lahan': 'SKL',
+  };
+  return map[jenisAset] || 'PKS';
+};
+
+const getCompanyInitials = (companyName) => {
+  if (!companyName) return 'XX';
+
+  const prefixMatch = companyName.match(/^(PT\.?|CV\.?|UD\.?)\s*/i);
+  let prefix = '';
+  let rest = companyName;
+  if (prefixMatch) {
+    prefix = prefixMatch[1].replace(/\.?$/, '.');
+    rest = companyName.substring(prefixMatch[0].length);
+  }
+
+  const initials = rest
+    .split(/\s+/)
+    .filter(w => w.length > 0)
+    .map(w => w.charAt(0).toUpperCase())
+    .join('');
+  return prefix ? `${prefix}${initials}` : initials;
+};
+
+const generateContractNumber = async (jenisAset, namaPerusahaan) => {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  const romanMonth = toRoman(month);
+  const docCode = getDocumentCode(jenisAset);
+  const companyInitials = getCompanyInitials(namaPerusahaan);
+
+  const countThisYear = await prisma.contracts.count({
+    where: {
+      created_at: {
+        gte: new Date(year, 0, 1),
+        lt: new Date(year + 1, 0, 1)
+      }
+    }
+  });
+
+  const nextNum = countThisYear + 1;
+  const formattedNum = String(nextNum).padStart(3, '0');
+  return `${formattedNum}/${docCode}-${companyInitials}/${romanMonth}/${year}`;
+};
+
+exports.createApplication = async (tenantId, payload) => {
+  const appNumber = await generateApplicationNumber();
+
+  return await prisma.rental_applications.create({
+    data: {
+      application_number: appNumber,
+      tenant_id: parseInt(tenantId),
+      asset_id: payload.asset_id ? parseInt(payload.asset_id) : null,
+      purpose: payload.purpose,
+      specific_needs: payload.specific_needs,
+      start_date: payload.start_date ? new Date(payload.start_date) : null,
+      end_date: payload.end_date ? new Date(payload.end_date) : null,
+      status: 'Pending'
+    },
+    include: {
+      assets: true
+    }
+  });
+};
+
+exports.getApplicationsByTenant = async (tenantId) => {
+  return await prisma.rental_applications.findMany({
+    where: { tenant_id: parseInt(tenantId) },
+    include: {
+      assets: true
+    },
+    orderBy: { id: 'desc' }
+  });
+};
+
+exports.getAllApplications = async (airportId) => {
+  let whereClause = {};
+  if (airportId) {
+    whereClause = {
+      assets: {
+        airport_id: parseInt(airportId)
+      }
+    };
+  }
+
+  return await prisma.rental_applications.findMany({
+    where: whereClause,
+    include: {
+      tenants: true,
+      assets: true
+    },
+    orderBy: { id: 'desc' }
+  });
+};
+
+exports.getApplicationById = async (id) => {
+  const app = await prisma.rental_applications.findUnique({
+    where: { id: parseInt(id) },
+    include: {
+      tenants: true,
+      assets: true,
+      contracts: true
+    }
+  });
+  if (!app) throw new Error('Application not found');
+  return app;
+};
+
+exports.updateApplicationStatus = async (id, status, assetIdOverride) => {
+  const app = await this.getApplicationById(id);
+
+  const updateData = { status };
+  if (assetIdOverride) {
+    updateData.asset_id = parseInt(assetIdOverride);
+  }
+
+  const updatedApp = await prisma.rental_applications.update({
+    where: { id: parseInt(id) },
+    data: updateData,
+    include: {
+      assets: {
+        include: {
+          master_tariffs: true
+        }
+      },
+      tenants: true
+    }
+  });
+
+  if (status === 'Approved' && !app.contracts) {
+    const finalAssetId = updatedApp.asset_id;
+    if (!finalAssetId) throw new Error('Asset ID must be assigned before approval');
+
+    const asset = updatedApp.assets;
+    const tenantName = updatedApp.tenants ? updatedApp.tenants.nama_perusahaan : '';
+    const contractNumber = await generateContractNumber(asset.jenis_aset, tenantName);
+
+    let totalAmount = 0;
+
+    let tarifSatuan = 0;
+    let periodePembayaran = 'Bulanan';
+
+    if (asset.master_tariffs && asset.master_tariffs.tarif) {
+      tarifSatuan = parseFloat(asset.master_tariffs.tarif);
+    } else if (asset.jenis_aset === 'Hanggar' && updatedApp.specific_needs && updatedApp.specific_needs.jenis_pesawat) {
+
+      const jenisPesawat = updatedApp.specific_needs.jenis_pesawat;
+      const aircraftTariff = await prisma.master_tariffs.findFirst({
+        where: {
+          jenis_layanan: 'Sewa Hanggar',
+          objek: {
+            contains: jenisPesawat
+          }
+        }
+      });
+      if (aircraftTariff) {
+        tarifSatuan = parseFloat(aircraftTariff.tarif);
+        periodePembayaran = 'Harian';
+      }
+    }
+
+    if (updatedApp.start_date && updatedApp.end_date && tarifSatuan > 0) {
+      const start = new Date(updatedApp.start_date);
+      const end = new Date(updatedApp.end_date);
+      const diffTime = Math.abs(end - start);
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+
+      if (periodePembayaran === 'Harian') {
+
+        totalAmount = tarifSatuan * diffDays;
+      } else {
+
+        const months = diffDays / 30;
+        const luas = asset.luas ? parseFloat(asset.luas) : 1;
+        totalAmount = tarifSatuan * months * luas;
+      }
+    }
+
+    await prisma.contracts.create({
+      data: {
+        contract_number: contractNumber,
+        application_id: updatedApp.id,
+        tenant_id: updatedApp.tenant_id,
+        asset_id: finalAssetId,
+        status: 'Draft',
+        start_date: updatedApp.start_date,
+        end_date: updatedApp.end_date,
+        jenis_pemanfaatan: updatedApp.purpose,
+        luas: asset.luas,
+        tarif_satuan: tarifSatuan,
+        periode_pembayaran: periodePembayaran,
+        deposit_jaminan: 0,
+        total_amount: totalAmount
+      }
+    });
+
+    await prisma.assets.update({
+      where: { id: finalAssetId },
+      data: { status: 'Reserved' }
+    });
+  }
+
+  return updatedApp;
+};
+
+--- FILE: src\services\tariffService.js ---
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+const getAllTariffs = async () => {
+  return await prisma.master_tariffs.findMany({
+    orderBy: { id: 'asc' }
+  });
+};
+
+const getTariffById = async (id) => {
+  const tariff = await prisma.master_tariffs.findUnique({
+    where: { id: parseInt(id) }
+  });
+  if (!tariff) throw new Error('Tariff not found');
+  return tariff;
+};
+
+const createTariff = async (data) => {
+  const { kode_tarif, jenis_layanan, objek, satuan, tarif, dasar_hukum, valid_from, valid_to, status } = data;
+
+  const existing = await prisma.master_tariffs.findUnique({
+    where: { kode_tarif }
+  });
+
+  if (existing) {
+    throw new Error('Kode Tarif already exists');
+  }
+
+  return await prisma.master_tariffs.create({
+    data: {
+      kode_tarif,
+      jenis_layanan,
+      objek,
+      satuan,
+      tarif: parseFloat(tarif),
+      dasar_hukum,
+      valid_from: valid_from ? new Date(valid_from) : null,
+      valid_to: valid_to ? new Date(valid_to) : null,
+      status: status || 'Active'
+    }
+  });
+};
+
+const updateTariff = async (id, data) => {
+  const { kode_tarif, jenis_layanan, objek, satuan, tarif, dasar_hukum, valid_from, valid_to, status } = data;
+
+  return await prisma.master_tariffs.update({
+    where: { id: parseInt(id) },
+    data: {
+      kode_tarif,
+      jenis_layanan,
+      objek,
+      satuan,
+      tarif: tarif ? parseFloat(tarif) : undefined,
+      dasar_hukum,
+      valid_from: valid_from ? new Date(valid_from) : null,
+      valid_to: valid_to ? new Date(valid_to) : null,
+      status,
+      updated_at: new Date()
+    }
+  });
+};
+
+const deleteTariff = async (id) => {
+  return await prisma.master_tariffs.delete({
+    where: { id: parseInt(id) }
+  });
+};
+
+module.exports = {
+  getAllTariffs,
+  getTariffById,
+  createTariff,
+  updateTariff,
+  deleteTariff
+};
+
+--- FILE: src\services\tenantService.js ---
+const prisma = require('../config/db');
+
+exports.fetchTenants = async () => {
+  const tenants = await prisma.tenants.findMany({
+    include: {
+      invoices: true,
+      contracts: true
+    },
+    orderBy: { id: 'asc' }
+  });
+
+  return tenants.map(tenant => {
+    return { ...tenant, risk_profile: calculateRiskProfile(tenant) };
+  });
+};
+
+exports.fetchTenantById = async (id) => {
+  const tenant = await prisma.tenants.findUnique({
+    where: { id: parseInt(id) },
+    include: {
+      invoices: true,
+      contracts: true
+    }
+  });
+  if (!tenant) throw new Error('Tenant not found');
+
+  return { ...tenant, risk_profile: calculateRiskProfile(tenant) };
+};
+
+exports.getTenantByUserId = async (userId) => {
+  const tenant = await prisma.tenants.findFirst({
+    where: { user_id: parseInt(userId) }
+  });
+  return tenant;
+};
+
+exports.addTenant = async (tenantData) => {
+  return await prisma.tenants.create({
+    data: tenantData
+  });
+};
+
+exports.updateTenantStatus = async (id, status_verifikasi) => {
+  const updateData = { status_verifikasi };
+  const existingTenant = await prisma.tenants.findUnique({ where: { id: parseInt(id) } });
+
+  if (!existingTenant) throw new Error('Tenant not found');
+
+  if (status_verifikasi === 'Verified') {
+    const legalitas = existingTenant.legalitas || {};
+
+    if (!existingTenant.tenant_id_str) {
+
+      const currentYear = new Date().getFullYear();
+      const paddedId = String(id).padStart(4, '0');
+      updateData.tenant_id_str = `T-${currentYear}-${paddedId}`;
+    }
+  }
+
+  const tenant = await prisma.tenants.update({
+    where: { id: parseInt(id) },
+    data: updateData
+  });
+  return tenant;
+};
+
+function calculateRiskProfile(tenant) {
+  const invoices = tenant.invoices || [];
+  const contracts = tenant.contracts || [];
+
+  const total_tagihan = invoices.reduce((sum, inv) => sum + parseFloat(inv.amount), 0);
+  const tunggakan = invoices
+    .filter(inv => inv.status === 'Unpaid' || inv.status === 'Overdue')
+    .reduce((sum, inv) => sum + parseFloat(inv.amount), 0);
+
+  let umur_piutang = 0;
+  const overdueInvoices = invoices.filter(inv => (inv.status === 'Unpaid' || inv.status === 'Overdue') && inv.due_date);
+
+  if (overdueInvoices.length > 0) {
+    const now = new Date();
+    let maxDays = 0;
+    overdueInvoices.forEach(inv => {
+      const dueDate = new Date(inv.due_date);
+      if (dueDate < now) {
+        const diffTime = Math.abs(now - dueDate);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        if (diffDays > maxDays) maxDays = diffDays;
+      }
+    });
+    umur_piutang = maxDays;
+  }
+
+  const activeContracts = contracts.filter(c => c.status === 'Active');
+  const status_kontrak = activeContracts.length > 0 ? 'Active' : 'No Active Contracts';
+
+  let status_pembayaran = 'Current';
+  if (tunggakan > 0) {
+    status_pembayaran = umur_piutang > 30 ? 'Delinquent' : 'Warning';
+  }
+
+  return {
+    total_tagihan,
+    tunggakan,
+    umur_piutang,
+    status_kontrak,
+    status_pembayaran
+  };
+}
+
+exports.uploadLegalitas = async (id, documentType, filePath) => {
+  const tenant = await prisma.tenants.findUnique({ where: { id: parseInt(id) } });
+  if (!tenant) throw new Error('Tenant not found');
+
+  const currentLegalitas = tenant.legalitas || {};
+  currentLegalitas[documentType] = filePath;
+
+  const updatedTenant = await prisma.tenants.update({
+    where: { id: parseInt(id) },
+    data: { legalitas: currentLegalitas }
+  });
+  return updatedTenant;
+};
+
+--- FILE: src\services\zoneService.js ---
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+const getAllZones = async (airport_id) => {
+  const where = {};
+  if (airport_id) {
+    where.airport_id = parseInt(airport_id);
+  }
+
+  return await prisma.zones.findMany({
+    where,
+    include: {
+      airports: true
+    }
+  });
+};
+
+const getZoneById = async (id) => {
+  const zone = await prisma.zones.findUnique({
+    where: { id: parseInt(id) },
+    include: {
+      airports: true
+    }
+  });
+  if (!zone) throw new Error('Zone not found');
+  return zone;
+};
+
+const createZone = async (data) => {
+  const { airport_id, kode_zona, nama_zona, tipe_zona, deskripsi } = data;
+
+  const existing = await prisma.zones.findUnique({
+    where: { kode_zona }
+  });
+
+  if (existing) {
+    throw new Error('Kode Zona already exists');
+  }
+
+  return await prisma.zones.create({
+    data: {
+      airport_id: parseInt(airport_id),
+      kode_zona,
+      nama_zona,
+      tipe_zona,
+      deskripsi
+    }
+  });
+};
+
+const updateZone = async (id, data) => {
+  const { airport_id, kode_zona, nama_zona, tipe_zona, deskripsi } = data;
+  return await prisma.zones.update({
+    where: { id: parseInt(id) },
+    data: {
+      airport_id: airport_id ? parseInt(airport_id) : undefined,
+      kode_zona,
+      nama_zona,
+      tipe_zona,
+      deskripsi,
+      updated_at: new Date()
+    }
+  });
+};
+
+const deleteZone = async (id) => {
+  return await prisma.zones.delete({
+    where: { id: parseInt(id) }
+  });
+};
+
+module.exports = {
+  getAllZones,
+  getZoneById,
+  createZone,
+  updateZone,
+  deleteZone
+};
+
+--- FILE: src\workers\billingCron.js ---
+const cron = require('node-cron');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+const generateMonthlyInvoices = async () => {
+    console.log('[Cron] Starting monthly billing generation...');
+    try {
+        const currentDate = new Date();
+        const currentMonth = currentDate.getMonth() + 1;
+        const currentYear = currentDate.getFullYear();
+
+        const firstDayOfMonth = new Date(currentYear, currentMonth - 1, 1);
+        const nextMonthFirstDay = new Date(currentYear, currentMonth, 1);
+
+        const scheduledInvoices = await prisma.invoices.findMany({
+            where: {
+                status: 'Scheduled',
+                created_at: {
+                    lt: nextMonthFirstDay
+                }
+            }
+        });
+
+        console.log(`[Cron] Found ${scheduledInvoices.length} scheduled invoices to awaken.`);
+        let awakenedCount = 0;
+
+        for (const invoice of scheduledInvoices) {
+
+            await prisma.invoices.update({
+                where: { id: invoice.id },
+                data: {
+                    status: 'Unpaid'
+
+                }
+            });
+
+            awakenedCount++;
+            console.log(`[Cron] Awakened scheduled invoice ${invoice.invoice_number}.`);
+        }
+
+        console.log(`[Cron] Monthly billing awakening complete. Awakened ${awakenedCount} invoices.`);
+        return { success: true, message: `Berhasil membangunkan ${awakenedCount} tagihan SKRD terjadwal (Scheduled) menjadi Unpaid untuk bulan ini.`, awakenedCount };
+    } catch (error) {
+        console.error('[Cron] Error awakening invoices:', error);
+        return { success: false, error: error.message };
+    }
+};
+
+const initCronJobs = () => {
+
+    cron.schedule('0 0 1 * *', () => {
+        generateMonthlyInvoices();
+    });
+    console.log('[Cron] Billing Automation initialized (Scheduled for 1st of every month at 00:00).');
+};
+
+module.exports = {
+    initCronJobs,
+    generateMonthlyInvoices
+};
+
+--- FILE: src\workers\penaltyCron.js ---
+const cron = require('node-cron');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+const dayjs = require('dayjs');
+
+const initPenaltyCron = () => {
+  cron.schedule('0 0 * * *', async () => {
+    console.log('[Cron] Running daily penalty check for Overdue invoices...');
+    try {
+      const today = dayjs().startOf('day');
+
+      const invoices = await prisma.invoices.findMany({
+        where: {
+          status: {
+            in: ['Unpaid', 'Overdue']
+          },
+          due_date: {
+            lt: today.toDate()
+          }
+        },
+        include: {
+          contracts: true
+        }
+      });
+
+      let updatedCount = 0;
+
+      for (const invoice of invoices) {
+        if (!invoice.due_date) continue;
+
+        const due = dayjs(invoice.due_date).startOf('day');
+        const diffDays = today.diff(due, 'day');
+
+        if (diffDays > 0) {
+
+          let bulanTelat = Math.ceil(diffDays / 30);
+
+          bulanTelat = Math.min(bulanTelat, 24);
+
+          const baseAmount = Number(invoice.amount);
+          const penaltyAmount = baseAmount * 0.02 * bulanTelat;
+
+          await prisma.invoices.update({
+            where: { id: invoice.id },
+            data: {
+              status: 'Overdue',
+              penalty_amount: penaltyAmount
+            }
+          });
+
+          updatedCount++;
+        }
+      }
+
+      console.log(`[Cron] Penalty check completed. Updated ${updatedCount} invoices to Overdue with penalties.`);
+    } catch (error) {
+      console.error('[Cron Error] Failed to execute penalty check:', error);
+    }
+  });
+  console.log('[Cron] Penalty & Overdue logic initialized (Runs daily at midnight).');
+};
+
+module.exports = { initPenaltyCron };
