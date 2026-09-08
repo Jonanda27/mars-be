@@ -8,6 +8,7 @@ exports.register = async (req, res, next) => {
       username: joi.string().min(3).required(),
       password: joi.string().min(6).required(),
       nama_perusahaan: joi.string().required(),
+      jenis_tenant: joi.string().valid('Maskapai', 'Umum').default('Maskapai'),
       nib: joi.string().allow('', null),
       npwp: joi.string().allow('', null),
       alamat: joi.string().allow('', null),

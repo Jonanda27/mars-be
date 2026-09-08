@@ -187,12 +187,94 @@ exports.verifyPayment = async (id) => {
   });
 
   // Activate contract when paid
-  await prisma.contracts.update({
+  const updatedContract = await prisma.contracts.update({
     where: { id: invoice.contract_id },
     data: {
       status: 'Active'
+    },
+    include: {
+      rental_applications: true
     }
   });
+
+  // Link aircrafts to the asset if applicable
+  if (updatedContract.rental_applications && updatedContract.rental_applications.specific_needs) {
+     const specificNeeds = updatedContract.rental_applications.specific_needs;
+     if (Array.isArray(specificNeeds.aircraft_ids) && specificNeeds.aircraft_ids.length > 0) {
+        const aircraftIds = specificNeeds.aircraft_ids.map(aid => parseInt(aid));
+        await prisma.aircrafts.updateMany({
+           where: { id: { in: aircraftIds } },
+           data: { 
+             asset_id: updatedContract.asset_id,
+             status: 'In Use' 
+           }
+        });
+     }
+  }
+
+  return invoice;
+};
+
+exports.generateOverstaySkrd = async (logId) => {
+  const log = await prisma.operational_logs.findUnique({
+    where: { id: parseInt(logId) },
+    include: {
+      contracts: true,
+      tenants: true
+    }
+  });
+
+  if (!log || !log.is_overstay || !log.overstay_days) {
+    throw new Error('Log not valid for overstay billing');
+  }
+  
+  if (log.billing_status !== 'Unbilled') {
+    throw new Error('Overstay is already billed');
+  }
+
+  const contract = log.contracts;
+  
+  // Calculate amount based on daily rate = tarif_satuan / 30 roughly, 
+  // or use tarif_satuan directly if it's daily. Assuming tarif_satuan is monthly in this system.
+  // Actually contract.tarif_satuan could be the rate.
+  let dailyRate = 0;
+  if (contract.periode_pembayaran === 'Bulanan') {
+    dailyRate = Number(contract.tarif_satuan) / 30;
+  } else if (contract.periode_pembayaran === 'Tahunan') {
+    dailyRate = Number(contract.tarif_satuan) / 365;
+  } else {
+    dailyRate = Number(contract.tarif_satuan); // Default assume daily or fixed
+  }
+
+  const overstayAmount = dailyRate * log.overstay_days * Number(contract.luas || 1);
+
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const count = await prisma.invoices.count();
+  const seq = String(count + 1).padStart(3, '0');
+  const invoiceNumber = `SKRD-OVS/${year}/${month}/${seq}`;
+  
+  const dueDate = new Date();
+  dueDate.setDate(dueDate.getDate() + 14);
+
+  // Use transaction to ensure both invoice creation and log update succeed
+  const [invoice, updatedLog] = await prisma.$transaction([
+    prisma.invoices.create({
+      data: {
+        invoice_number: invoiceNumber,
+        contract_id: contract.id,
+        tenant_id: log.tenant_id,
+        amount: overstayAmount,
+        due_date: dueDate,
+        status: 'Unpaid'
+      }
+    }),
+    prisma.operational_logs.update({
+      where: { id: log.id },
+      data: { billing_status: 'Billed' }
+    })
+  ]);
 
   return invoice;
 };

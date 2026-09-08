@@ -31,16 +31,33 @@ exports.createTenant = async (req, res, next) => {
 exports.verifyTenant = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, alasan_penolakan } = req.body;
     
     if (!status) {
       return res.status(400).json({ success: false, message: 'Status is required' });
     }
     
-    const updatedTenant = await tenantService.updateTenantStatus(id, status);
+    const updatedTenant = await tenantService.updateTenantStatus(id, status, alasan_penolakan);
     res.status(200).json({
       success: true,
       message: `Tenant status updated to ${status}`,
+      data: updatedTenant
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateProfile = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { nib, npwp, alamat, pic, nomor_telepon, email } = req.body;
+    
+    const updatedTenant = await tenantService.updateProfile(id, { nib, npwp, alamat, pic, nomor_telepon, email });
+    
+    res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully',
       data: updatedTenant
     });
   } catch (error) {
@@ -57,7 +74,7 @@ exports.uploadLegalitas = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Document type and file are required' });
     }
 
-    const filePath = `/uploads/legalitas/${req.file.filename}`;
+    const filePath = req.file.path;
     const updatedTenant = await tenantService.uploadLegalitas(id, documentType, filePath);
 
     res.status(200).json({

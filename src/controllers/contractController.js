@@ -61,8 +61,8 @@ exports.updateContractStatusByTenant = async (req, res, next) => {
 
 exports.extendContract = async (req, res, next) => {
   try {
-    const { duration_months } = req.body;
-    const newApplication = await contractService.extendContract(req.params.id, req.user.tenant_id, duration_months);
+    const { new_end_date } = req.body;
+    const newApplication = await contractService.extendContract(req.params.id, req.user.tenant_id, new_end_date);
     res.status(201).json({ success: true, message: 'Extension requested successfully', data: newApplication });
   } catch (error) {
     next(error);
@@ -73,6 +73,28 @@ exports.terminateContract = async (req, res, next) => {
   try {
     const updatedContract = await contractService.terminateContract(req.params.id);
     res.status(200).json({ success: true, message: 'Contract terminated successfully', data: updatedContract });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.uploadSignature = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'File is required' });
+    }
+    const fileUrl = `/uploads/${req.file.filename}`;
+    const updatedContract = await contractService.uploadSignature(req.params.id, req.user.tenant_id, fileUrl);
+    res.status(200).json({ success: true, message: 'Signature uploaded successfully', data: updatedContract });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.verifyContract = async (req, res, next) => {
+  try {
+    const updatedContract = await contractService.verifyContract(req.params.id);
+    res.status(200).json({ success: true, message: 'Contract verified and activated successfully', data: updatedContract });
   } catch (error) {
     next(error);
   }

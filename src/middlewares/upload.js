@@ -1,23 +1,46 @@
 const multer = require('multer');
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const cloudinary = require('cloudinary').v2;
 const path = require('path');
-const fs = require('fs');
 
-// Ensure upload directories exist
-const uploadDir = path.join(__dirname, '../../public/uploads/legalitas');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+// Konfigurasi Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
-// Multer config
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
+// Konfigurasi Storage untuk Multer
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: async (req, file) => {
+    // Generate unique id
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    
+    // Cloudinary automatically handles file extensions, but we can preserve original name if needed
+    // Removing extension from original name for public_id
     const ext = path.extname(file.originalname);
-    cb(null, file.fieldname + '-' + uniqueSuffix + ext);
-  }
+    const basename = path.basename(file.originalname, ext);
+
+    let folderName = 'MARS/General';
+    if (file.fieldname === 'receipt') {
+      folderName = 'MARS/Receipts';
+    } else if (file.fieldname === 'file' || req.body.documentType) {
+      folderName = 'MARS/Legalitas';
+    } else if (file.fieldname === 'asset_image') {
+      folderName = 'MARS/Assets';
+    } else if (file.fieldname === 'profile_picture') {
+      folderName = 'MARS/Profiles';
+    } else if (file.fieldname === 'log_evidence') {
+      folderName = 'MARS/Logs';
+    }
+
+    return {
+      folder: folderName,
+      public_id: `${file.fieldname}-${basename}-${uniqueSuffix}`,
+      resource_type: 'auto' // Important for non-image files like PDF
+    };
+  },
 });
 
 const fileFilter = (req, file, cb) => {

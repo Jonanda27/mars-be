@@ -5,7 +5,7 @@ const prisma = require('../config/db');
 const JWT_SECRET = process.env.JWT_SECRET || 'secret_key_mars_2026';
 
 exports.registerTenant = async (data) => {
-  const { username, password, nama_perusahaan, nib, npwp, alamat, pic, nomor_telepon, email } = data;
+  const { username, password, nama_perusahaan, jenis_tenant, nib, npwp, alamat, pic, nomor_telepon, email } = data;
 
   const existingUser = await prisma.users.findUnique({
     where: { username }
@@ -34,6 +34,7 @@ exports.registerTenant = async (data) => {
       data: {
         user_id: newUser.id,
         nama_perusahaan,
+        jenis_tenant: jenis_tenant || 'Maskapai',
         nib,
         npwp,
         alamat,
@@ -80,6 +81,8 @@ exports.loginUser = async (username, password) => {
     airport_id: user.airport_id,
     tenant_id: tenantData ? tenantData.id : null,
     tenant_id_str: tenantData ? tenantData.tenant_id_str : null,
+    nama_perusahaan: tenantData ? tenantData.nama_perusahaan : null,
+    jenis_tenant: tenantData ? tenantData.jenis_tenant : null,
     status_verifikasi: tenantData ? tenantData.status_verifikasi : null
   };
 
@@ -112,6 +115,7 @@ exports.getUserProfile = async (userId) => {
     tenant_id: tenantData ? tenantData.id : null,
     tenant_id_str: tenantData ? tenantData.tenant_id_str : null,
     nama_perusahaan: tenantData ? tenantData.nama_perusahaan : null,
+    jenis_tenant: tenantData ? tenantData.jenis_tenant : null,
     status_verifikasi: tenantData ? tenantData.status_verifikasi : null
   };
 };

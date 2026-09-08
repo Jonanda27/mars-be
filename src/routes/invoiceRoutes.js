@@ -26,6 +26,8 @@ const upload = multer({ storage: storage });
 router.get('/', protect, authorize('Admin', 'Super Admin'), invoiceController.getAllInvoices);
 router.get('/tenant', protect, authorize('Tenant'), invoiceController.getTenantInvoices);
 router.get('/:id', protect, invoiceController.getInvoiceById);
+router.post('/generate-skrd/:contractId', protect, authorize('Admin', 'Super Admin'), invoiceController.generateSkrd);
+router.post('/generate-skrd-overstay/:logId', protect, authorize('Admin', 'Super Admin'), invoiceController.generateOverstaySkrd);
 router.post('/:id/upload-receipt', protect, authorize('Tenant'), upload.single('receipt'), invoiceController.uploadReceipt);
 router.post('/:id/verify', protect, authorize('Admin', 'Super Admin'), invoiceController.verifyPayment);
 

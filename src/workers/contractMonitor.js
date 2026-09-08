@@ -12,9 +12,6 @@ const checkContractExpirations = async () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0); // Start of day
 
-    const thirtyDaysFromNow = new Date(today);
-    thirtyDaysFromNow.setDate(today.getDate() + 30);
-
     // Get all contracts that are currently Active or Expiring
     const activeContracts = await prisma.contracts.findMany({
       where: {
@@ -37,17 +34,78 @@ const checkContractExpirations = async () => {
             where: { id: contract.id },
             data: { status: 'Expired' }
           });
+          
+          // Guard clause: Check if any other non-expired contract uses this asset
+          if (contract.asset_id) {
+            const otherActiveContracts = await prisma.contracts.count({
+              where: {
+                asset_id: contract.asset_id,
+                id: { not: contract.id },
+                status: { notIn: ['Expired', 'Terminated', 'Rejected'] }
+              }
+            });
+
+            if (otherActiveContracts === 0) {
+              // Release the asset back to Available
+              await prisma.assets.update({
+                where: { id: contract.asset_id },
+                data: { status: 'Available' }
+              });
+            }
+
+            // Guard clause for aircraft: Check if THIS tenant has another active contract for this asset
+            const sameTenantOtherContracts = await prisma.contracts.count({
+              where: {
+                asset_id: contract.asset_id,
+                tenant_id: contract.tenant_id,
+                id: { not: contract.id },
+                status: { notIn: ['Expired', 'Terminated', 'Rejected'] }
+              }
+            });
+
+            if (sameTenantOtherContracts === 0) {
+              // Release tied aircraft for this tenant
+              await prisma.aircrafts.updateMany({
+                where: { 
+                  asset_id: contract.asset_id,
+                  tenant_id: contract.tenant_id
+                },
+                data: { 
+                  asset_id: null,
+                  status: 'Active' 
+                }
+              });
+            }
+          }
           expiredCount++;
         }
       } 
-      // Check if it's expiring within 30 days
-      else if (endDate <= thirtyDaysFromNow) {
-        if (contract.status !== 'Expiring') {
-          await prisma.contracts.update({
-            where: { id: contract.id },
-            data: { status: 'Expiring' }
-          });
-          expiringCount++;
+      // Check dynamic expiration threshold based on total lease duration
+      else if (contract.start_date) {
+        const startDate = new Date(contract.start_date);
+        startDate.setHours(0, 0, 0, 0);
+        
+        // Calculate total duration and remaining days
+        const totalDurationMs = endDate.getTime() - startDate.getTime();
+        const totalDurationDays = Math.ceil(totalDurationMs / (1000 * 60 * 60 * 24));
+        
+        const remainingMs = endDate.getTime() - today.getTime();
+        const remainingDays = Math.ceil(remainingMs / (1000 * 60 * 60 * 24));
+        
+        let threshold = 30; // Default
+        if (totalDurationDays > 90) threshold = 30;
+        else if (totalDurationDays >= 30) threshold = 7;
+        else if (totalDurationDays >= 7) threshold = 3;
+        else threshold = 1;
+        
+        if (remainingDays <= threshold) {
+          if (contract.status !== 'Expiring') {
+            await prisma.contracts.update({
+              where: { id: contract.id },
+              data: { status: 'Expiring' }
+            });
+            expiringCount++;
+          }
         }
       }
     }
@@ -58,61 +116,6 @@ const checkContractExpirations = async () => {
   }
 };
 
-const generatePeriodicBilling = async () => {
-  console.log('--- CRON JOB: Generating Periodic Billing ---');
-  try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    // Find all active contracts
-    const activeContracts = await prisma.contracts.findMany({
-      where: { status: 'Active' }
-    });
-
-    let generatedCount = 0;
-
-    for (const contract of activeContracts) {
-      // Find the most recent invoice for this contract
-      const latestInvoice = await prisma.invoices.findFirst({
-        where: { contract_id: contract.id },
-        orderBy: { created_at: 'desc' }
-      });
-
-      if (!latestInvoice) continue; // If no initial invoice exists, skip
-
-      const lastBillingDate = new Date(latestInvoice.created_at);
-      lastBillingDate.setHours(0, 0, 0, 0);
-
-      let nextBillingDate = new Date(lastBillingDate);
-
-      if (contract.periode_pembayaran === 'Bulanan') {
-        nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
-      } else if (contract.periode_pembayaran === 'Tahunan') {
-        nextBillingDate.setFullYear(nextBillingDate.getFullYear() + 1);
-      } else {
-        continue; // Unsupported period
-      }
-
-      // If today is equal or past the next billing date, generate a new invoice!
-      if (today >= nextBillingDate) {
-        // Ensure we don't generate after contract end date
-        const endDate = contract.end_date ? new Date(contract.end_date) : null;
-        if (endDate) {
-          endDate.setHours(0, 0, 0, 0);
-          if (today > endDate) continue;
-        }
-
-        console.log(`Generating periodic invoice for Contract ID: ${contract.id}`);
-        await invoiceService.generateInvoice(contract.id, true);
-        generatedCount++;
-      }
-    }
-
-    console.log(`Periodic Billing Complete: Generated ${generatedCount} new invoices.`);
-  } catch (error) {
-    console.error('Error running periodic billing cron job:', error);
-  }
-};
 
 const checkArrearsAndGenerateWarnings = async () => {
   console.log('--- CRON JOB: Checking arrears and generating warnings ---');
@@ -199,15 +202,13 @@ const initCronJobs = () => {
   // Run every day at 00:00
   cron.schedule('0 0 * * *', () => {
     checkContractExpirations();
-    generatePeriodicBilling();
     checkArrearsAndGenerateWarnings();
   });
-  console.log('Cron Jobs Initialized: Contract Monitor, Periodic Billing & Risk Control (runs daily at midnight)');
+  console.log('Cron Jobs Initialized: Contract Monitor & Risk Control (runs daily at midnight)');
 };
 
 module.exports = {
   initCronJobs,
   checkContractExpirations,
-  generatePeriodicBilling,
   checkArrearsAndGenerateWarnings
 };

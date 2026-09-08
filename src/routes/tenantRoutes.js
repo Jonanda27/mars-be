@@ -9,7 +9,8 @@ router.use(authMiddleware);
 router.get('/', authorizeRoles('admin', 'superadmin'), tenantController.getTenants);
 router.get('/:id', tenantController.getTenant);
 router.post('/', authorizeRoles('admin', 'superadmin'), tenantController.createTenant);
-router.put('/:id/verify', authorizeRoles('superadmin'), tenantController.verifyTenant);
+router.put('/:id/profile', tenantController.updateProfile);
+router.put('/:id/verify', authorizeRoles('admin', 'superadmin'), tenantController.verifyTenant);
 router.post('/:id/legalitas', upload.single('file'), tenantController.uploadLegalitas);
 
 module.exports = router;

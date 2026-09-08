@@ -9,6 +9,15 @@ exports.getAircrafts = async (req, res, next) => {
   }
 };
 
+exports.getAircraftTypes = async (req, res, next) => {
+  try {
+    const types = await aircraftService.fetchAircraftTypes();
+    res.status(200).json({ success: true, data: types });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.getAircraft = async (req, res, next) => {
   try {
     const aircraft = await aircraftService.fetchAircraftById(req.params.id);

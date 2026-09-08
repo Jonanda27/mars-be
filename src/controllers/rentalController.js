@@ -47,9 +47,36 @@ exports.getApplicationById = async (req, res, next) => {
 
 exports.updateApplicationStatus = async (req, res, next) => {
   try {
+    const { id } = req.params;
     const { status, asset_id } = req.body;
-    const updatedApp = await rentalService.updateApplicationStatus(req.params.id, status, asset_id);
-    res.status(200).json({ success: true, message: `Application ${status}`, data: updatedApp });
+    const app = await rentalService.updateApplicationStatus(id, status, asset_id);
+    res.status(200).json({ success: true, data: app });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getApprovedApplications = async (req, res, next) => {
+  try {
+    const apps = await rentalService.getApprovedApplications();
+    res.status(200).json({ success: true, data: apps });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.uploadSignature = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+    
+    // File is saved in uploads/ (or cloud), req.file.path contains the path
+    const filePath = req.file.path.replace(/\\/g, '/'); // Normalize path for Windows
+    const app = await rentalService.updateSignature(id, filePath);
+    
+    res.status(200).json({ success: true, data: app });
   } catch (error) {
     next(error);
   }

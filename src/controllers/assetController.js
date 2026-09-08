@@ -49,3 +49,12 @@ exports.deleteAsset = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.getAssetCapacity = async (req, res, next) => {
+  try {
+    const capacity = await assetService.getHangarCapacity(req.params.id);
+    res.status(200).json({ success: true, data: capacity });
+  } catch (error) {
+    next(error);
+  }
+};

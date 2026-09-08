@@ -18,7 +18,8 @@ exports.getContractById = async (id) => {
     include: {
       tenants: true,
       assets: true,
-      rental_applications: true
+      rental_applications: true,
+      invoices: true
     }
   });
   if (!contract) throw new Error('Contract not found');
@@ -45,6 +46,7 @@ exports.getContractsByTenant = async (tenantId) => {
   return await prisma.contracts.findMany({
     where: { tenant_id: parseInt(tenantId) },
     include: {
+      tenants: true,
       assets: true,
       rental_applications: true
     },
@@ -83,15 +85,13 @@ exports.updateContractStatusByTenant = async (id, tenantId, status, tenant_signa
     }
   });
 
-  if (status === 'Waiting Payment' || status === 'Approved') {
-    // Generate Invoice automatically when signed by tenant
-    await invoiceService.generateInvoice(id);
-  }
+  // Invoice will now be generated manually by Admin at the end of the rental period (SKRD)
+  // as per the new business rules.
 
   return updatedContract;
 };
 
-exports.extendContract = async (id, tenantId, durationMonths) => {
+exports.extendContract = async (id, tenantId, newEndDate) => {
   const contract = await this.getContractByIdAndTenant(id, tenantId);
   
   if (contract.status !== 'Expiring' && contract.status !== 'Active') {
@@ -107,8 +107,16 @@ exports.extendContract = async (id, tenantId, durationMonths) => {
   const newStartDate = new Date(oldEndDate);
   newStartDate.setDate(newStartDate.getDate() + 1);
 
-  const newEndDate = new Date(newStartDate);
-  newEndDate.setMonth(newEndDate.getMonth() + parseInt(durationMonths));
+  const parsedNewEndDate = new Date(newEndDate);
+  if (parsedNewEndDate <= newStartDate) {
+    throw new Error('New end date must be after the start date of the extension');
+  }
+
+  // Preserve specific needs from original application if available
+  let specificNeeds = null;
+  if (contract.rental_applications && contract.rental_applications.specific_needs) {
+    specificNeeds = contract.rental_applications.specific_needs;
+  }
 
   const newApplication = await prisma.rental_applications.create({
     data: {
@@ -116,8 +124,9 @@ exports.extendContract = async (id, tenantId, durationMonths) => {
       tenant_id: parseInt(tenantId),
       asset_id: contract.asset_id,
       purpose: `Perpanjangan Kontrak No: ${contract.contract_number}`,
+      specific_needs: specificNeeds ? JSON.parse(JSON.stringify(specificNeeds)) : null,
       start_date: newStartDate,
-      end_date: newEndDate,
+      end_date: parsedNewEndDate,
       status: 'Pending'
     }
   });
@@ -138,13 +147,82 @@ exports.terminateContract = async (id) => {
     data: { status: 'Terminated' }
   });
 
-  // Release the asset back to Available
+  // Guard clause: Check if any other non-expired contract uses this asset
   if (contract.asset_id) {
-    await prisma.assets.update({
-      where: { id: contract.asset_id },
-      data: { status: 'Available' }
+    const otherActiveContracts = await prisma.contracts.count({
+      where: {
+        asset_id: contract.asset_id,
+        id: { not: contract.id },
+        status: { notIn: ['Expired', 'Terminated', 'Rejected'] }
+      }
     });
+
+    if (otherActiveContracts === 0) {
+      // Release the asset back to Available
+      await prisma.assets.update({
+        where: { id: contract.asset_id },
+        data: { status: 'Available' }
+      });
+    }
+
+    // Guard clause for aircraft: Check if THIS tenant has another active contract for this asset
+    const sameTenantOtherContracts = await prisma.contracts.count({
+      where: {
+        asset_id: contract.asset_id,
+        tenant_id: contract.tenant_id,
+        id: { not: contract.id },
+        status: { notIn: ['Expired', 'Terminated', 'Rejected'] }
+      }
+    });
+
+    if (sameTenantOtherContracts === 0) {
+      // Release tied aircraft for this tenant
+      await prisma.aircrafts.updateMany({
+        where: { 
+          asset_id: contract.asset_id,
+          tenant_id: contract.tenant_id
+        },
+        data: { 
+          asset_id: null,
+          status: 'Active' 
+        }
+      });
+    }
   }
 
   return updatedContract;
+};
+
+exports.uploadSignature = async (id, tenantId, fileUrl) => {
+  const contract = await prisma.contracts.findUnique({ where: { id: parseInt(id) } });
+  if (!contract) throw new Error('Contract not found');
+  if (contract.tenant_id !== parseInt(tenantId)) throw new Error('Unauthorized');
+  
+  if (contract.status !== 'Menunggu TTD Tenant') {
+    throw new Error('Contract is not waiting for signature');
+  }
+
+  return await prisma.contracts.update({
+    where: { id: parseInt(id) },
+    data: {
+      signed_document_url: fileUrl,
+      status: 'Menunggu Verifikasi Admin'
+    }
+  });
+};
+
+exports.verifyContract = async (id) => {
+  const contract = await prisma.contracts.findUnique({ where: { id: parseInt(id) } });
+  if (!contract) throw new Error('Contract not found');
+
+  if (contract.status !== 'Menunggu Verifikasi Admin') {
+    throw new Error('Contract is not waiting for verification');
+  }
+
+  return await prisma.contracts.update({
+    where: { id: parseInt(id) },
+    data: {
+      status: 'Aktif' // Set to Active once verified
+    }
+  });
 };

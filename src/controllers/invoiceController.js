@@ -35,11 +35,11 @@ exports.getInvoiceById = async (req, res, next) => {
 exports.uploadReceipt = async (req, res, next) => {
   try {
     const method = req.body.payment_method;
-    const filename = req.file ? req.file.filename : null;
-    if (!filename) {
+    const fileUrl = req.file ? req.file.path : null;
+    if (!fileUrl) {
       return res.status(400).json({ success: false, message: 'Bukti bayar diperlukan' });
     }
-    const invoice = await invoiceService.uploadReceipt(req.params.id, filename, method);
+    const invoice = await invoiceService.uploadReceipt(req.params.id, fileUrl, method);
     res.json({ success: true, data: invoice, message: 'Bukti bayar berhasil diunggah' });
   } catch (error) {
     next(error);
@@ -50,6 +50,26 @@ exports.verifyPayment = async (req, res, next) => {
   try {
     const invoice = await invoiceService.verifyPayment(req.params.id);
     res.json({ success: true, data: invoice, message: 'Pembayaran berhasil diverifikasi' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.generateSkrd = async (req, res, next) => {
+  try {
+    const contractId = req.params.contractId;
+    const invoice = await invoiceService.generateInvoice(contractId);
+    res.status(201).json({ success: true, data: invoice, message: 'SKRD berhasil diterbitkan' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.generateOverstaySkrd = async (req, res, next) => {
+  try {
+    const logId = req.params.logId;
+    const invoice = await invoiceService.generateOverstaySkrd(logId);
+    res.status(201).json({ success: true, data: invoice, message: 'SKRD Overstay berhasil diterbitkan' });
   } catch (error) {
     next(error);
   }

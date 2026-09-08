@@ -10,7 +10,7 @@ datasource db {
 model aircrafts {
   id                  Int       @id @default(autoincrement())
   registration_number String    @unique @db.VarChar(50)
-  aircraft_type       String?   @db.VarChar(100)
+  aircraft_type_id    Int?
   aircraft_owner      String?   @db.VarChar(150)
   operator            String?   @db.VarChar(150)
   mtow                Decimal?  @db.Decimal(10, 2)
@@ -21,8 +21,21 @@ model aircrafts {
   capacity            Int?
   created_at          DateTime? @default(now()) @db.Timestamp(6)
   updated_at          DateTime? @default(now()) @db.Timestamp(6)
+  
+  aircraft_types      aircraft_types? @relation(fields: [aircraft_type_id], references: [id], onDelete: SetNull)
   assets              assets?   @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
   tenants             tenants?  @relation(fields: [tenant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model aircraft_types {
+  id               Int       @id @default(autoincrement())
+  jenis_pesawat    String    @unique @db.VarChar(100)
+  luas_efektif_m2  Decimal   @db.Decimal(10, 2)
+  created_at       DateTime? @default(now()) @db.Timestamp(6)
+  updated_at       DateTime? @default(now()) @db.Timestamp(6)
+  
+  aircrafts        aircrafts[]
+  master_tariffs   master_tariffs[] // Back-relation: satu tipe pesawat bisa punya 1 tarif
 }
 
 model airports {
@@ -88,12 +101,13 @@ model assets {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model tenants {
-  id                Int         @id @default(autoincrement())
-  user_id           Int?
-  tenant_id_str     String?     @unique @db.VarChar(50)
-  nama_perusahaan   String      @db.VarChar(150)
-  nib               String?     @db.VarChar(50)
-  npwp              String?     @db.VarChar(50)
+    id                Int         @id @default(autoincrement())
+    user_id           Int?
+    tenant_id_str     String?     @unique @db.VarChar(50)
+    nama_perusahaan   String      @db.VarChar(150)
+    jenis_tenant      String?     @default("Maskapai") @db.VarChar(50)
+    nib               String?     @db.VarChar(50)
+    npwp              String?     @db.VarChar(50)
   alamat            String?
   pic               String?     @db.VarChar(100)
   nomor_telepon     String?     @db.VarChar(50)
@@ -104,11 +118,13 @@ model tenants {
   created_at        DateTime?   @default(now()) @db.Timestamp(6)
   updated_at        DateTime?   @default(now()) @db.Timestamp(6)
   status_verifikasi String?     @default("Pending") @db.VarChar(20)
+  alasan_penolakan  String?     @db.Text
   aircrafts           aircrafts[]
   rental_applications rental_applications[]
   contracts           contracts[]
   invoices            invoices[]
   warnings            warnings[]
+  operational_logs    operational_logs[]
   users               users?      @relation(fields: [user_id], references: [id], onUpdate: NoAction)
 }
 
@@ -123,6 +139,7 @@ model users {
   
   airports      airports? @relation(fields: [airport_id], references: [id], onDelete: SetNull)
   tenants       tenants[]
+  logged_operations operational_logs[]
 }
 
 model rental_applications {
@@ -135,19 +152,22 @@ model rental_applications {
   status             String?     @default("Pending") @db.VarChar(50)
   start_date         DateTime?   @db.Date
   end_date           DateTime?   @db.Date
+  contract_id        Int?
+  signed_document_url String?    @db.VarChar(255)
   created_at         DateTime?   @default(now()) @db.Timestamp(6)
   updated_at         DateTime?   @default(now()) @db.Timestamp(6)
-  tenants            tenants     @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  assets             assets?     @relation(fields: [asset_id], references: [id], onDelete: SetNull)
-  contracts          contracts?
+  tenants             tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  assets              assets?   @relation(fields: [asset_id], references: [id], onDelete: SetNull)
+  contracts           contracts? @relation(fields: [contract_id], references: [id], onDelete: SetNull)
+  operational_logs    operational_logs[]
 }
 
 model contracts {
-  id                 Int         @id @default(autoincrement())
-  contract_number    String      @unique @db.VarChar(50)
-  application_id     Int         @unique
-  tenant_id          Int
-  asset_id           Int
+  id                   Int         @id @default(autoincrement())
+  contract_number      String      @unique @db.VarChar(50)
+  contract_type        String      @default("Payung") @db.VarChar(50)
+  tenant_id            Int
+  asset_id             Int?
   status               String?     @default("Draft") @db.VarChar(50)
   start_date           DateTime?   @db.Date
   end_date             DateTime?   @db.Date
@@ -161,30 +181,39 @@ model contracts {
   denda                String?
   total_amount         Decimal?    @db.Decimal(15, 2)
   file_url             String?     @db.VarChar(255)
+  signed_document_url  String?     @db.VarChar(255)
   admin_signature      String?     @db.Text
   tenant_signature     String?     @db.Text
   created_at           DateTime?   @default(now()) @db.Timestamp(6)
-  updated_at         DateTime?   @default(now()) @db.Timestamp(6)
-  rental_applications rental_applications @relation(fields: [application_id], references: [id], onDelete: Cascade)
-  tenants            tenants     @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  assets             assets      @relation(fields: [asset_id], references: [id], onDelete: Restrict)
-  invoices           invoices[]
+  updated_at           DateTime?   @default(now()) @db.Timestamp(6)
+  
+  tenants              tenants     @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  assets               assets?     @relation(fields: [asset_id], references: [id], onDelete: Restrict)
+  rental_applications  rental_applications[]
+  invoices             invoices[]
+  operational_logs     operational_logs[]
 }
 
 model master_tariffs {
-  id            Int       @id @default(autoincrement())
-  kode_tarif    String    @unique @db.VarChar(50)
-  jenis_layanan String    @db.VarChar(100)
-  objek         String    @db.VarChar(150)
-  satuan        String    @db.VarChar(50)
-  tarif         Decimal   @db.Decimal(15, 2)
-  dasar_hukum   String?   @db.VarChar(255)
-  valid_from    DateTime? @db.Date
-  valid_to      DateTime? @db.Date
-  status        String?   @default("Active") @db.VarChar(50)
-  created_at    DateTime? @default(now()) @db.Timestamp(6)
-  updated_at    DateTime? @default(now()) @db.Timestamp(6)
-  assets        assets[]
+  id               Int       @id @default(autoincrement())
+  kode_tarif       String    @unique @db.VarChar(50)
+  jenis_layanan    String    @db.VarChar(100)
+  // objek tetap ada sebagai human-readable label untuk invoice/cetak dokumen
+  objek            String    @db.VarChar(150)
+  // FK ke aircraft_types (null untuk tarif non-pesawat seperti Sewa Ruangan)
+  aircraft_type_id Int?
+  satuan           String    @db.VarChar(50)
+  tarif            Decimal   @db.Decimal(15, 2)
+  dasar_hukum      String?   @db.VarChar(255)
+  fasilitas_tambahan Json?
+  valid_from       DateTime? @db.Date
+  valid_to         DateTime? @db.Date
+  status           String?   @default("Active") @db.VarChar(50)
+  created_at       DateTime? @default(now()) @db.Timestamp(6)
+  updated_at       DateTime? @default(now()) @db.Timestamp(6)
+
+  assets           assets[]
+  aircraft_types   aircraft_types? @relation(fields: [aircraft_type_id], references: [id], onDelete: SetNull)
 }
 
 model invoices {
@@ -219,6 +248,37 @@ model warnings {
   
   tenants        tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   invoices       invoices? @relation(fields: [invoice_id], references: [id], onDelete: SetNull)
+}
+
+// =========================================================================
+// MODEL LOG OPERASIONAL
+// =========================================================================
+
+model operational_logs {
+  id                  Int       @id @default(autoincrement())
+  registration_number String    @db.VarChar(50)
+  tenant_id           Int
+  asset_id            Int?
+  entry_time          DateTime  @db.Timestamp(6)
+  exit_time           DateTime? @db.Timestamp(6)
+  is_overnight        Boolean   @default(false)
+  evidence_photo      String?   @db.VarChar(255)
+  officer_id          Int
+  parking_location    String    @default("Hanggar") @db.VarChar(50)
+  amount              Decimal?  @db.Decimal(15, 2)
+  notes               String?   @db.Text
+  billing_status      String    @default("Unbilled") @db.VarChar(50)
+  contract_id         Int?
+  application_id      Int?
+  is_overstay         Boolean   @default(false)
+  overstay_days       Int?      @default(0)
+  created_at          DateTime? @default(now()) @db.Timestamp(6)
+  updated_at          DateTime? @default(now()) @db.Timestamp(6)
+
+  tenants             tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  officer             users     @relation(fields: [officer_id], references: [id], onDelete: Restrict)
+  contracts           contracts? @relation(fields: [contract_id], references: [id], onDelete: SetNull)
+  rental_applications rental_applications? @relation(fields: [application_id], references: [id], onDelete: SetNull)
 }
 
 // =========================================================================
