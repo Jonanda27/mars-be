@@ -147,6 +147,7 @@ model rental_applications {
   application_number String      @unique @db.VarChar(50)
   tenant_id          Int
   asset_id           Int?
+  application_type   String?     @db.VarChar(50)
   purpose            String?     @db.VarChar(255)
   specific_needs     Json?
   status             String?     @default("Pending") @db.VarChar(50)
@@ -154,6 +155,7 @@ model rental_applications {
   end_date           DateTime?   @db.Date
   contract_id        Int?
   signed_document_url String?    @db.VarChar(255)
+  official_letter_url String?    @db.VarChar(255)
   created_at         DateTime?   @default(now()) @db.Timestamp(6)
   updated_at         DateTime?   @default(now()) @db.Timestamp(6)
   tenants             tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
@@ -320,5 +322,13 @@ model parking_warden_handovers {
 
   airports                airports    @relation(fields: [airport_id], references: [id], onUpdate: NoAction)
   ticket_books            parking_ticket_books @relation(fields: [book_id], references: [id], onDelete: Restrict)
+}
+
+model otps {
+  id         Int      @id @default(autoincrement())
+  email      String   @unique @db.VarChar(100)
+  otp_code   String   @db.VarChar(10)
+  expires_at DateTime @db.Timestamp(6)
+  created_at DateTime @default(now()) @db.Timestamp(6)
 }
 

@@ -198,7 +198,7 @@ exports.uploadSignature = async (id, tenantId, fileUrl) => {
   if (!contract) throw new Error('Contract not found');
   if (contract.tenant_id !== parseInt(tenantId)) throw new Error('Unauthorized');
   
-  if (contract.status !== 'Menunggu TTD Tenant') {
+  if (contract.status !== 'Menunggu TTD Tenant' && contract.status !== 'Draft') {
     throw new Error('Contract is not waiting for signature');
   }
 
@@ -219,10 +219,21 @@ exports.verifyContract = async (id) => {
     throw new Error('Contract is not waiting for verification');
   }
 
-  return await prisma.contracts.update({
-    where: { id: parseInt(id) },
-    data: {
-      status: 'Aktif' // Set to Active once verified
-    }
+  return await prisma.$transaction(async (tx) => {
+    // 1. Update contract status to Aktif
+    const updatedContract = await tx.contracts.update({
+      where: { id: parseInt(id) },
+      data: {
+        status: 'Aktif'
+      }
+    });
+
+    // 2. Also update the linked rental_application status
+    await tx.rental_applications.updateMany({
+      where: { contract_id: parseInt(id) },
+      data: { status: 'Signed' }
+    });
+
+    return updatedContract;
   });
 };

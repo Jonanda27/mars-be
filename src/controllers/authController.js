@@ -1,6 +1,26 @@
 const authService = require('../services/authService');
 const joi = require('joi');
 
+exports.requestOtp = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      const err = new Error('Email wajib diisi');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const result = await authService.requestOtp(email);
+    res.status(200).json({
+      success: true,
+      message: 'Kode OTP telah dikirim ke email Anda.',
+      data: result
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.register = async (req, res, next) => {
   try {
     // Validasi input sederhana dengan Joi
@@ -14,7 +34,8 @@ exports.register = async (req, res, next) => {
       alamat: joi.string().allow('', null),
       pic: joi.string().required(),
       nomor_telepon: joi.string().required(),
-      email: joi.string().email().required()
+      email: joi.string().email().required(),
+      otp_code: joi.string().length(6).required()
     });
 
     const { error } = schema.validate(req.body);

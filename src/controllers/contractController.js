@@ -83,7 +83,8 @@ exports.uploadSignature = async (req, res, next) => {
     if (!req.file) {
       return res.status(400).json({ success: false, message: 'File is required' });
     }
-    const fileUrl = `/uploads/${req.file.filename}`;
+    // multer-storage-cloudinary provides the remote URL in req.file.path
+    const fileUrl = req.file.path;
     const updatedContract = await contractService.uploadSignature(req.params.id, req.user.tenant_id, fileUrl);
     res.status(200).json({ success: true, message: 'Signature uploaded successfully', data: updatedContract });
   } catch (error) {

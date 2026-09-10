@@ -95,23 +95,173 @@ const generateContractNumber = async (jenisAset, namaPerusahaan) => {
   return `${formattedNum}/${docCode}-${companyInitials}/${romanMonth}/${year}`;
 };
 
-exports.createApplication = async (tenantId, payload) => {
+exports.createApplication = async (tenantId, payload, file) => {
   const appNumber = await generateApplicationNumber();
   
+  let officialLetterUrl = null;
+  if (file) {
+    // When using Cloudinary, file.path contains the direct URL.
+    // Replace backslashes just in case it's a local fallback.
+    officialLetterUrl = file.path.replace(/\\/g, '/');
+  }
+
   return await prisma.rental_applications.create({
     data: {
       application_number: appNumber,
       tenant_id: parseInt(tenantId),
-      asset_id: payload.asset_id ? parseInt(payload.asset_id) : null,
+      asset_id: null, // intentionally null at step 1
+      application_type: payload.application_type || null,
+      official_letter_url: officialLetterUrl,
       purpose: payload.purpose,
-      specific_needs: payload.specific_needs,
-      start_date: payload.start_date ? new Date(payload.start_date) : null,
-      end_date: payload.end_date ? new Date(payload.end_date) : null,
-      status: 'Pending'
+      status: 'Menunggu Verifikasi Kadis' // Step 1 status
     },
     include: {
       assets: true
     }
+  });
+};
+
+exports.verifyLetter = async (id, status) => {
+  return await prisma.rental_applications.update({
+    where: { id: parseInt(id) },
+    data: {
+      status: status // 'Surat Disetujui' or 'Ditolak'
+    }
+  });
+};
+
+exports.completeDetails = async (id, payload) => {
+  return await prisma.rental_applications.update({
+    where: { id: parseInt(id) },
+    data: {
+      application_type: payload.application_type,
+      asset_id: payload.asset_id ? parseInt(payload.asset_id) : null,
+      specific_needs: payload.specific_needs,
+      start_date: payload.start_date ? new Date(payload.start_date) : null,
+      end_date: payload.end_date ? new Date(payload.end_date) : null,
+      status: 'Menunggu Validasi Admin'
+    }
+  });
+};
+
+exports.approveAndDraftContract = async (id, user) => {
+  const application = await prisma.rental_applications.findUnique({
+    where: { id: parseInt(id) },
+    include: {
+      tenants: true,
+      assets: true
+    }
+  });
+
+  if (!application) throw new Error('Application not found');
+  if (application.status === 'Disetujui' || application.contract_id) {
+    throw new Error('Application is already approved or has a contract');
+  }
+  
+  // We need asset details to draft the contract
+  if (!application.asset_id || !application.assets) {
+    throw new Error('Asset must be assigned before approval');
+  }
+
+  const asset = application.assets;
+  const tenant = application.tenants;
+
+  // Generate draft contract number
+  const contractNum = await generateContractNumber(asset.jenis_aset, tenant.nama_perusahaan);
+  
+  // Calculate values based on application dates and master tariffs
+  let totalAmount = 0;
+  let tarifSatuan = 0;
+  
+  if (application.start_date && application.end_date) {
+    const diffTime = Math.abs(new Date(application.end_date).getTime() - new Date(application.start_date).getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    const months = Math.max(1, Math.ceil(diffDays / 30));
+    
+    const isHanggar = asset.jenis_aset?.toLowerCase().includes('hanggar');
+    
+    if (isHanggar && application.specific_needs) {
+      // Calculate per aircraft per night for Hanggar
+      let totalTarifPerMalam = 0;
+      const specificNeeds = typeof application.specific_needs === 'string' 
+        ? JSON.parse(application.specific_needs) 
+        : application.specific_needs;
+        
+      if (Array.isArray(specificNeeds.aircraft_details)) {
+        for (const detail of specificNeeds.aircraft_details) {
+          if (detail.aircraft_type_id) {
+            const masterTariff = await prisma.master_tariffs.findFirst({
+              where: { aircraft_type_id: parseInt(detail.aircraft_type_id) }
+            });
+            if (masterTariff) {
+              totalTarifPerMalam += Number(masterTariff.tarif);
+            }
+          }
+        }
+      } else if (Array.isArray(specificNeeds.aircraft_ids)) {
+        for (const acId of specificNeeds.aircraft_ids) {
+          const aircraft = await prisma.aircrafts.findUnique({
+            where: { id: parseInt(acId) }
+          });
+          if (aircraft && aircraft.aircraft_type_id) {
+            const masterTariff = await prisma.master_tariffs.findFirst({
+              where: { aircraft_type_id: parseInt(aircraft.aircraft_type_id) }
+            });
+            if (masterTariff) {
+              totalTarifPerMalam += Number(masterTariff.tarif);
+            }
+          }
+        }
+      }
+      totalAmount = diffDays * totalTarifPerMalam;
+      tarifSatuan = totalTarifPerMalam; // Total per malam
+    } else if (asset.master_tariff_id) {
+      // Calculate per month for other assets
+      const masterTariff = await prisma.master_tariffs.findUnique({
+        where: { id: parseInt(asset.master_tariff_id) }
+      });
+      if (masterTariff) {
+        tarifSatuan = Number(masterTariff.tarif);
+        totalAmount = months * tarifSatuan;
+      }
+    }
+  }
+
+  // Start transaction to update application and create draft contract
+  return await prisma.$transaction(async (tx) => {
+    // 1. Create Draft Contract
+    const draftContract = await tx.contracts.create({
+      data: {
+        contract_number: contractNum,
+        contract_type: application.application_type && application.application_type.includes('Perpanjangan') ? 'Perpanjangan' : 'Sewa Baru',
+        tenant_id: tenant.id,
+        asset_id: asset.id,
+        status: 'Draft',
+        start_date: application.start_date,
+        end_date: application.end_date,
+        jenis_pemanfaatan: application.purpose,
+        luas: asset.luas,
+        tarif_satuan: tarifSatuan,
+        periode_pembayaran: 'Bulanan', // Default
+        total_amount: totalAmount,
+      }
+    });
+
+    // 2. Update Application Status & link contract
+    const updatedApp = await tx.rental_applications.update({
+      where: { id: parseInt(id) },
+      data: {
+        status: 'Draft Kontrak',
+        contract_id: draftContract.id
+      },
+      include: {
+        contracts: true,
+        tenants: true,
+        assets: true
+      }
+    });
+
+    return updatedApp;
   });
 };
 

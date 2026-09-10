@@ -3,9 +3,50 @@ const jwt = require('jsonwebtoken');
 const prisma = require('../config/db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secret_key_mars_2026';
+const { sendOtpEmail } = require('./emailService');
+
+exports.requestOtp = async (email) => {
+  // Generate 6 digit OTP
+  const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+  await prisma.otps.upsert({
+    where: { email },
+    update: {
+      otp_code: otpCode,
+      expires_at: expiresAt,
+      created_at: new Date()
+    },
+    create: {
+      email,
+      otp_code: otpCode,
+      expires_at: expiresAt
+    }
+  });
+
+  return await sendOtpEmail(email, otpCode);
+};
 
 exports.registerTenant = async (data) => {
-  const { username, password, nama_perusahaan, jenis_tenant, nib, npwp, alamat, pic, nomor_telepon, email } = data;
+  const { username, password, nama_perusahaan, jenis_tenant, nib, npwp, alamat, pic, nomor_telepon, email, otp_code } = data;
+
+  // Validate OTP
+  const otpRecord = await prisma.otps.findUnique({ where: { email } });
+  if (!otpRecord) {
+    const error = new Error('Minta OTP terlebih dahulu');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (otpRecord.otp_code !== otp_code) {
+    const error = new Error('Kode OTP salah');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (new Date() > otpRecord.expires_at) {
+    const error = new Error('Kode OTP sudah kadaluarsa');
+    error.statusCode = 400;
+    throw error;
+  }
 
   const existingUser = await prisma.users.findUnique({
     where: { username }
@@ -44,6 +85,8 @@ exports.registerTenant = async (data) => {
         status_verifikasi: 'Pending'
       }
     });
+
+    await tx.otps.delete({ where: { email } });
 
     return { user: { id: newUser.id, username: newUser.username, role: newUser.role }, tenant: newTenant };
   });

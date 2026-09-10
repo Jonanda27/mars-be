@@ -18,12 +18,14 @@
     "dayjs": "^1.11.23",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
     "joi": "^18.2.5",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.11.0",
     "multer": "^2.2.0",
     "multer-storage-cloudinary": "^4.0.0",
     "node-cron": "^4.6.0",
+    "nodemailer": "^10.0.1",
     "pg": "^8.23.0"
   },
   "devDependencies": {
