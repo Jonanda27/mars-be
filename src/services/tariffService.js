@@ -1,5 +1,4 @@
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 
 const getAllTariffs = async () => {
   return await prisma.master_tariffs.findMany({
@@ -9,7 +8,7 @@ const getAllTariffs = async () => {
 
 const getTariffById = async (id) => {
   const tariff = await prisma.master_tariffs.findUnique({
-    where: { id: parseInt(id) }
+    where: { id: Number.parseInt(id, 10) }
   });
   if (!tariff) throw new Error('Tariff not found');
   return tariff;
@@ -32,7 +31,7 @@ const createTariff = async (data) => {
       jenis_layanan,
       objek,
       satuan,
-      tarif: parseFloat(tarif),
+      tarif: Number.parseFloat(tarif),
       dasar_hukum,
       valid_from: valid_from ? new Date(valid_from) : null,
       valid_to: valid_to ? new Date(valid_to) : null,
@@ -45,13 +44,13 @@ const updateTariff = async (id, data) => {
   const { kode_tarif, jenis_layanan, objek, satuan, tarif, dasar_hukum, valid_from, valid_to, status } = data;
 
   return await prisma.master_tariffs.update({
-    where: { id: parseInt(id) },
+    where: { id: Number.parseInt(id, 10) },
     data: {
       kode_tarif,
       jenis_layanan,
       objek,
       satuan,
-      tarif: tarif ? parseFloat(tarif) : undefined,
+      tarif: tarif ? Number.parseFloat(tarif) : undefined,
       dasar_hukum,
       valid_from: valid_from ? new Date(valid_from) : null,
       valid_to: valid_to ? new Date(valid_to) : null,
@@ -63,7 +62,7 @@ const updateTariff = async (id, data) => {
 
 const deleteTariff = async (id) => {
   return await prisma.master_tariffs.delete({
-    where: { id: parseInt(id) }
+    where: { id: Number.parseInt(id, 10) }
   });
 };
 

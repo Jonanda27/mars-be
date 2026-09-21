@@ -1,10 +1,9 @@
+const path = require('node:path');
+const crypto = require('node:crypto');
 const multer = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const cloudinary = require('cloudinary').v2;
-const path = require('path');
-const { PrismaClient } = require('@prisma/client');
-
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 
 // Konfigurasi Cloudinary
 cloudinary.config({
@@ -13,57 +12,61 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+const SUB_FOLDER_MAP = {
+  receipt: 'Pembayaran',
+  asset_image: 'Assets',
+  profile_picture: 'Profiles',
+  log_evidence: 'Logs',
+  signature_file: 'Kontrak',
+  official_letter: 'Permohonan'
+};
+
+const determineSubFolder = (file, documentType) => {
+  if (SUB_FOLDER_MAP[file.fieldname]) {
+    return SUB_FOLDER_MAP[file.fieldname];
+  }
+  if (file.fieldname === 'file' || documentType) {
+    return 'Legalitas';
+  }
+  return 'Lainnya';
+};
+
+const resolveCompanyName = async (req) => {
+  if (req.body?.nama_perusahaan) {
+    return req.body.nama_perusahaan;
+  }
+  if (req.user?.tenant_id) {
+    try {
+      const tenant = await prisma.tenants.findUnique({
+        where: { id: Number.parseInt(req.user.tenant_id, 10) },
+        select: { nama_perusahaan: true }
+      });
+      if (tenant?.nama_perusahaan) {
+        return tenant.nama_perusahaan;
+      }
+    } catch (err) {
+      console.error('Failed to fetch tenant name for Cloudinary folder:', err);
+    }
+  }
+  return 'General';
+};
+
 // Konfigurasi Storage untuk Multer
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: async (req, file) => {
-    // Generate unique id
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    // Generate unique id using safe random integer
+    const uniqueSuffix = `${Date.now()}-${crypto.randomInt(1, 1e9)}`;
     
     // Removing extension from original name for public_id
     const ext = path.extname(file.originalname);
     const basename = path.basename(file.originalname, ext);
 
-    // Default company name fallback
-    let companyName = 'General';
-
-    // 1. Saat registrasi, ambil dari req.body
-    if (req.body.nama_perusahaan) {
-      companyName = req.body.nama_perusahaan;
-    } 
-    // 2. Saat tenant sudah login, ambil dari database menggunakan req.user.tenant_id
-    else if (req.user && req.user.tenant_id) {
-      try {
-        const tenant = await prisma.tenants.findUnique({
-          where: { id: parseInt(req.user.tenant_id) },
-          select: { nama_perusahaan: true }
-        });
-        if (tenant && tenant.nama_perusahaan) {
-          companyName = tenant.nama_perusahaan;
-        }
-      } catch (err) {
-        console.error('Failed to fetch tenant name for Cloudinary folder:', err);
-      }
-    }
+    const companyName = await resolveCompanyName(req);
 
     // Bersihkan nama perusahaan dari karakter khusus (spasi, titik, dsb) untuk penamaan folder yang aman
     const sanitizedCompanyName = companyName.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
-
-    // Tentukan sub-folder berdasarkan jenis file
-    let subFolder = 'Lainnya';
-    if (file.fieldname === 'receipt') {
-      subFolder = 'Pembayaran';
-    } else if (file.fieldname === 'file' || req.body.documentType) {
-      subFolder = 'Legalitas';
-    } else if (file.fieldname === 'asset_image') {
-      subFolder = 'Assets';
-    } else if (file.fieldname === 'profile_picture') {
-      subFolder = 'Profiles';
-    } else if (file.fieldname === 'log_evidence') {
-      subFolder = 'Logs';
-    } else if (file.fieldname === 'signature_file') {
-      subFolder = 'Kontrak';
-    }
+    const subFolder = determineSubFolder(file, req.body?.documentType);
 
     // Tentukan resource_type berdasarkan mimetype
     const resourceType = file.mimetype === 'application/pdf' ? 'raw' : 'auto';

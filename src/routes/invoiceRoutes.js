@@ -23,12 +23,20 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-router.get('/', protect, authorize('Admin', 'Super Admin'), invoiceController.getAllInvoices);
+router.get('/', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Kepala Dinas'), invoiceController.getAllInvoices);
 router.get('/tenant', protect, authorize('Tenant'), invoiceController.getTenantInvoices);
+router.get('/unbilled-hanggar', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Warden'), invoiceController.getUnbilledHanggarLogs);
+router.post('/generate-hanggar-checkout', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Warden'), invoiceController.generateHanggarCheckoutInvoice);
+router.post('/generate-hanggar-periodic', protect, authorize('Admin', 'Super Admin', 'Dinas'), invoiceController.generateHanggarPeriodicInvoice);
 router.get('/:id', protect, invoiceController.getInvoiceById);
-router.post('/generate-skrd/:contractId', protect, authorize('Admin', 'Super Admin'), invoiceController.generateSkrd);
-router.post('/generate-skrd-overstay/:logId', protect, authorize('Admin', 'Super Admin'), invoiceController.generateOverstaySkrd);
+router.post('/generate-skrd/:contractId', protect, authorize('Admin', 'Super Admin', 'Dinas'), invoiceController.generateSkrd);
+router.post('/generate-skrd-overstay/:logId', protect, authorize('Admin', 'Super Admin', 'Dinas'), invoiceController.generateOverstaySkrd);
 router.post('/:id/upload-receipt', protect, authorize('Tenant'), upload.single('receipt'), invoiceController.uploadReceipt);
-router.post('/:id/verify', protect, authorize('Admin', 'Super Admin'), invoiceController.verifyPayment);
+router.post('/:id/verify', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Kepala Dinas'), invoiceController.verifyPayment);
+router.post('/:id/generate-penalty', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Kepala Dinas', 'dinas', 'kepala dinas'), invoiceController.generatePenaltyInvoice);
+router.post('/:id/cancel', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Kepala Dinas', 'dinas', 'kepala dinas'), invoiceController.cancelInvoice);
+router.post('/:id/reissue', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Kepala Dinas', 'dinas', 'kepala dinas'), invoiceController.reissueInvoice);
 
 module.exports = router;
+
+

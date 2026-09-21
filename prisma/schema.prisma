@@ -25,6 +25,7 @@ model aircrafts {
   aircraft_types      aircraft_types? @relation(fields: [aircraft_type_id], references: [id], onDelete: SetNull)
   assets              assets?   @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
   tenants             tenants?  @relation(fields: [tenant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  flight_schedules    flight_schedules[]
 }
 
 model aircraft_types {
@@ -97,6 +98,7 @@ model assets {
   rental_applications rental_applications[]
   contracts           contracts[]
   master_tariffs      master_tariffs? @relation(fields: [master_tariff_id], references: [id], onDelete: SetNull)
+  overnight_items     daily_overnight_items[]
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -125,21 +127,26 @@ model tenants {
   invoices            invoices[]
   warnings            warnings[]
   operational_logs    operational_logs[]
+  overnight_items     daily_overnight_items[]
+  flight_schedules    flight_schedules[]
   users               users?      @relation(fields: [user_id], references: [id], onUpdate: NoAction)
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model users {
-  id            Int       @id @default(autoincrement())
-  username      String    @unique @db.VarChar(50)
-  password_hash String    @db.VarChar(255)
-  role          String    @db.VarChar(20)
-  airport_id    Int?
-  created_at    DateTime? @default(now()) @db.Timestamp(6)
+  id                Int       @id @default(autoincrement())
+  username          String    @unique @db.VarChar(50)
+  password_hash     String    @db.VarChar(255)
+  role              String    @db.VarChar(20)
+  airport_id        Int?
+  created_at        DateTime? @default(now()) @db.Timestamp(6)
   
-  airports      airports? @relation(fields: [airport_id], references: [id], onDelete: SetNull)
-  tenants       tenants[]
+  airports          airports? @relation(fields: [airport_id], references: [id], onDelete: SetNull)
+  tenants           tenants[]
   logged_operations operational_logs[]
+  notifications     notifications[]
+  overnight_reports daily_overnight_reports[]
+  verified_schedules flight_schedules[]
 }
 
 model rental_applications {
@@ -194,6 +201,7 @@ model contracts {
   rental_applications  rental_applications[]
   invoices             invoices[]
   operational_logs     operational_logs[]
+  flight_schedules     flight_schedules[]
 }
 
 model master_tariffs {
@@ -219,23 +227,26 @@ model master_tariffs {
 }
 
 model invoices {
-  id             Int       @id @default(autoincrement())
-  invoice_number String    @unique @db.VarChar(50)
-  contract_id    Int
-  tenant_id      Int
-  amount         Decimal   @db.Decimal(15, 2)
-  penalty_amount Decimal?  @default(0) @db.Decimal(15, 2)
-  due_date       DateTime? @db.Date
-  status         String?   @default("Unpaid") @db.VarChar(50)
-  payment_method String?   @db.VarChar(100)
-  payment_receipt String?  @db.VarChar(255)
-  payment_date   DateTime? @db.Timestamp(6)
-  created_at     DateTime? @default(now()) @db.Timestamp(6)
-  updated_at     DateTime? @default(now()) @db.Timestamp(6)
+  id                  Int       @id @default(autoincrement())
+  invoice_number      String    @unique @db.VarChar(50)
+  contract_id         Int?
+  tenant_id           Int
+  invoice_type        String?   @default("Sewa Hanggar") @db.VarChar(50) // 'Sewa Ruangan' | 'Sewa Hanggar' | 'SKRD Denda' | 'SKRD Overstay'
+  amount              Decimal   @db.Decimal(15, 2)
+  penalty_amount      Decimal?  @default(0) @db.Decimal(15, 2)
+  due_date            DateTime? @db.Date
+  status              String?   @default("Unpaid") @db.VarChar(50)
+  payment_method      String?   @db.VarChar(100)
+  payment_receipt     String?   @db.VarChar(255)
+  payment_date        DateTime? @db.Timestamp(6)
+  details             Json?     // Rincian rincian pemakaian armada: [{ registration_number, aircraft_type, entry_time, exit_time, total_nights, rate_per_night, subtotal, log_id }]
+  created_at          DateTime? @default(now()) @db.Timestamp(6)
+  updated_at          DateTime? @default(now()) @db.Timestamp(6)
   
-  contracts      contracts @relation(fields: [contract_id], references: [id], onDelete: Cascade)
-  tenants        tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  warnings       warnings[]
+  contracts           contracts? @relation(fields: [contract_id], references: [id], onDelete: SetNull)
+  tenants             tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  warnings            warnings[]
+  operational_logs    operational_logs[]
 }
 
 model warnings {
@@ -272,6 +283,8 @@ model operational_logs {
   billing_status      String    @default("Unbilled") @db.VarChar(50)
   contract_id         Int?
   application_id      Int?
+  invoice_id          Int?
+  schedule_id         Int?
   is_overstay         Boolean   @default(false)
   overstay_days       Int?      @default(0)
   created_at          DateTime? @default(now()) @db.Timestamp(6)
@@ -281,6 +294,81 @@ model operational_logs {
   officer             users     @relation(fields: [officer_id], references: [id], onDelete: Restrict)
   contracts           contracts? @relation(fields: [contract_id], references: [id], onDelete: SetNull)
   rental_applications rental_applications? @relation(fields: [application_id], references: [id], onDelete: SetNull)
+  invoices            invoices? @relation(fields: [invoice_id], references: [id], onDelete: SetNull)
+  flight_schedules    flight_schedules? @relation(fields: [schedule_id], references: [id], onDelete: SetNull)
+  overnight_items     daily_overnight_items[]
+}
+
+// =========================================================================
+// MODEL JADWAL PEMAKAIAN HANGGAR (FLIGHT SCHEDULES)
+// =========================================================================
+
+model flight_schedules {
+  id                     Int       @id @default(autoincrement())
+  schedule_number        String    @unique @db.VarChar(50)
+  tenant_id              Int
+  contract_id            Int?
+  aircraft_id            Int?
+  registration_number    String    @db.VarChar(50)
+  aircraft_type          String?   @db.VarChar(100)
+  parking_location       String    @default("Hanggar") @db.VarChar(50)
+  purpose                String?   @db.VarChar(150)
+  estimated_arrival      DateTime  @db.Timestamp(6)
+  estimated_departure    DateTime? @db.Timestamp(6)
+  estimated_nights       Int       @default(1)
+  notes                  String?   @db.Text
+  flight_plan_url        String?   @db.VarChar(255)
+  status                 String    @default("Menunggu Verifikasi Petugas") @db.VarChar(50)
+  verified_by_officer_id Int?
+  officer_notes          String?   @db.Text
+  verified_at            DateTime? @db.Timestamp(6)
+  created_at             DateTime? @default(now()) @db.Timestamp(6)
+  updated_at             DateTime? @default(now()) @db.Timestamp(6)
+
+  tenant                 tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  contract               contracts? @relation(fields: [contract_id], references: [id], onDelete: SetNull)
+  aircraft               aircrafts? @relation(fields: [aircraft_id], references: [id], onDelete: SetNull)
+  verified_by_officer    users?    @relation(fields: [verified_by_officer_id], references: [id], onDelete: SetNull)
+  operational_logs       operational_logs[]
+}
+
+// =========================================================================
+// MODEL LAPORAN TUTUP HARI (DAILY OVERNIGHT REPORT)
+// =========================================================================
+
+model daily_overnight_reports {
+  id                     Int       @id @default(autoincrement())
+  report_date            DateTime  @db.Date
+  officer_id             Int
+  total_aircraft_staying Int       @default(0)
+  general_notes          String?   @db.Text
+  general_evidence_photo String?   @db.VarChar(255)
+  status                 String    @default("Submitted") @db.VarChar(50)
+  created_at             DateTime? @default(now()) @db.Timestamp(6)
+  updated_at             DateTime? @default(now()) @db.Timestamp(6)
+
+  officer                users     @relation(fields: [officer_id], references: [id], onDelete: Restrict)
+  items                  daily_overnight_items[]
+}
+
+model daily_overnight_items {
+  id                  Int       @id @default(autoincrement())
+  report_id           Int
+  operational_log_id  Int?
+  registration_number String    @db.VarChar(50)
+  tenant_id           Int?
+  asset_id            Int?
+  aircraft_type       String?   @db.VarChar(100)
+  parking_location    String    @default("Hanggar") @db.VarChar(50)
+  evidence_photo      String    @db.VarChar(255) // Wajib foto bukti
+  is_adhoc            Boolean   @default(false)  // true jika input manual Opsi B
+  notes               String?   @db.Text
+  created_at          DateTime? @default(now()) @db.Timestamp(6)
+
+  report              daily_overnight_reports @relation(fields: [report_id], references: [id], onDelete: Cascade)
+  operational_log     operational_logs?       @relation(fields: [operational_log_id], references: [id], onDelete: SetNull)
+  tenant              tenants?                @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
+  asset               assets?                 @relation(fields: [asset_id], references: [id], onDelete: SetNull)
 }
 
 // =========================================================================
@@ -332,3 +420,15 @@ model otps {
   created_at DateTime @default(now()) @db.Timestamp(6)
 }
 
+model notifications {
+  id         Int       @id @default(autoincrement())
+  user_id    Int
+  title      String    @db.VarChar(255)
+  message    String    @db.Text
+  type       String    @db.VarChar(50)
+  is_read    Boolean   @default(false)
+  link_url   String?   @db.VarChar(255)
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  
+  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}

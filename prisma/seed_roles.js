@@ -10,7 +10,7 @@ async function seedUser(username, password, role) {
 
   if (!existingUser) {
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await prisma.users.create({
+    await prisma.users.create({
       data: {
         username: username,
         password_hash: hashedPassword,
@@ -27,6 +27,7 @@ async function main() {
   await seedUser('kepaladinas', 'password123', 'Kepala Dinas');
   await seedUser('petugas', 'password123', 'Petugas Lapangan');
   await seedUser('admin', 'password123', 'Admin');
+  await seedUser('dinas', 'password123', 'Dinas');
 }
 
 main()

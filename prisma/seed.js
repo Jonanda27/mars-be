@@ -1,37 +1,28 @@
-const { PrismaClient } = require('@prisma/client');
-const bcrypt = require('bcryptjs');
-
-const prisma = new PrismaClient();
+const { execSync } = require('node:child_process');
+const path = require('node:path');
 
 async function main() {
-  const username = 'admin';
-  const password = 'password123';
-  
-  // Periksa apakah admin sudah ada
-  const existingAdmin = await prisma.users.findUnique({
-    where: { username }
-  });
+  console.log('=== Memulai Proses Seeding Database MARS ===\n');
 
-  if (!existingAdmin) {
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const adminUser = await prisma.users.create({
-      data: {
-        username: username,
-        password_hash: hashedPassword,
-        role: 'Admin',
-      },
-    });
-    console.log('Seeding berhasil: User Admin dibuat.', adminUser);
-  } else {
-    console.log('Seeding diabaikan: User Admin sudah ada.');
+  const scripts = [
+    'seed_roles.js',
+    'seed_airports_zones.js',
+    'seed_users_tenants.js',
+    'seed_aircraft_tariffs.js',
+    'seed_assets.js'
+  ];
+
+  for (const script of scripts) {
+    const scriptPath = path.join(__dirname, script);
+    console.log(`--> Menjalankan ${script}...`);
+    execSync(`node "${scriptPath}"`, { stdio: 'inherit' });
+    console.log(`--> ${script} selesai.\n`);
   }
+
+  console.log('=== Semua Seeder Berhasil Dijalankan! ===');
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+main().catch((e) => {
+  console.error('Terjadi error saat seeding:', e);
+  process.exit(1);
+});

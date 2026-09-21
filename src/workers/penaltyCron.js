@@ -1,6 +1,5 @@
 const cron = require('node-cron');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 const dayjs = require('dayjs');
 
 // Run everyday at Midnight: '0 0 * * *'

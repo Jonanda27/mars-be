@@ -7,7 +7,9 @@ exports.fetchAircrafts = async () => {
 };
 
 exports.fetchAircraftTypes = async () => {
-  return await prisma.aircraft_types.findMany();
+  return await prisma.aircraft_types.findMany({
+    include: { master_tariffs: true }
+  });
 };
 
 exports.fetchAircraftsByTenant = async (tenantId) => {
@@ -15,7 +17,9 @@ exports.fetchAircraftsByTenant = async (tenantId) => {
     where: { tenant_id: tenantId },
     include: {
       assets: true,
-      aircraft_types: true
+      aircraft_types: {
+        include: { master_tariffs: true }
+      }
     },
     orderBy: { created_at: 'desc' }
   });

@@ -186,20 +186,28 @@ async function main() {
   // Tarif non-pesawat (Apron & Ruangan) — tidak perlu aircraft_type_id
   const nonAircraftTariffs = [
     { kode_tarif: 'TRF-APRON-ALL',    jenis_layanan: 'Sewa Apron',   objek: 'Penggunaan Apron Area',             satuan: 'unit/malam', tarif: 2000000 },
+    // Di Dalam Terminal
     { kode_tarif: 'TRF-RMG-IN-TB',    jenis_layanan: 'Sewa Ruangan', objek: 'Terminal - Terbuka tanpa AC',       satuan: 'm2/bulan',   tarif: 31000 },
     { kode_tarif: 'TRF-RMG-IN-TT',    jenis_layanan: 'Sewa Ruangan', objek: 'Terminal - Tertutup tanpa AC',      satuan: 'm2/bulan',   tarif: 48000 },
     { kode_tarif: 'TRF-RMG-IN-TBAC',  jenis_layanan: 'Sewa Ruangan', objek: 'Terminal - Terbuka dengan AC',     satuan: 'm2/bulan',   tarif: 65000 },
     { kode_tarif: 'TRF-RMG-IN-TTAC',  jenis_layanan: 'Sewa Ruangan', objek: 'Terminal - Tertutup dengan AC',    satuan: 'm2/bulan',   tarif: 72000 },
+    // Di Luar Terminal
+    { kode_tarif: 'TRF-RMG-OUT-TB',   jenis_layanan: 'Sewa Ruangan', objek: 'Luar Terminal - Terbuka tanpa AC',    satuan: 'm2/bulan',   tarif: 21000 },
+    { kode_tarif: 'TRF-RMG-OUT-TT',   jenis_layanan: 'Sewa Ruangan', objek: 'Luar Terminal - Tertutup tanpa AC',   satuan: 'm2/bulan',   tarif: 38000 },
+    { kode_tarif: 'TRF-RMG-OUT-TBAC', jenis_layanan: 'Sewa Ruangan', objek: 'Luar Terminal - Terbuka dengan AC',  satuan: 'm2/bulan',   tarif: 55000 },
+    { kode_tarif: 'TRF-RMG-OUT-TTAC', jenis_layanan: 'Sewa Ruangan', objek: 'Luar Terminal - Tertutup dengan AC', satuan: 'm2/bulan',   tarif: 72000 },
   ];
 
+  const createdNonAircraftTariffs = {};
   for (const t of nonAircraftTariffs) {
-    await prisma.master_tariffs.upsert({
+    const tariff = await prisma.master_tariffs.upsert({
       where: { kode_tarif: t.kode_tarif },
-      update: {},
+      update: { tarif: t.tarif, objek: t.objek, satuan: t.satuan },
       create: { ...t, status: 'Active' }
     });
+    createdNonAircraftTariffs[t.kode_tarif] = tariff;
   }
-  console.log('Non-aircraft tariffs seeded (Apron, Ruangan).');
+  console.log('Non-aircraft tariffs seeded (Apron, Ruangan In & Out).');
 
   // ==========================================
   // 6. SEED ASSETS (Hangars)
@@ -263,7 +271,171 @@ async function main() {
         fire_safety: 'Fire Extinguisher, Smoke Detector',
         fasilitas_lainnya: '-'
       }
-    }
+    },
+
+    // ==========================================
+    // RUANGAN DI DALAM TERMINAL
+    // ==========================================
+    {
+      kode_aset: 'TIM-RMG-01',
+      jenis_aset: 'Ruangan',
+      nama_aset: 'Ruang Kantor Lantai 1 - Terminal',
+      airport_id: createdAirports['TIM'].id,
+      zone_id: createdZones['TIM']['TERM'].id,
+      lokasi: 'Lantai 1, Terminal Penumpang',
+      luas: 48,
+      satuan: 'm²',
+      kapasitas: '10-12 Orang',
+      kondisi: 'Baik',
+      status: 'Available',
+      master_tariff_id: createdNonAircraftTariffs['TRF-RMG-IN-TTAC']?.id || null,
+      spesifikasi_detail: {
+        lokasi_zona: 'Di Dalam Terminal',
+        tipe_ruangan: 'Tertutup',
+        fasilitas_ac: true,
+        fasilitas_listrik: '2.200 VA',
+        fasilitas_air: 'PAM',
+        toilet: '1 Toilet',
+        furniture: 'Meja kerja, Kursi, Lemari arsip',
+        koneksi_internet: 'Tersedia (LAN)',
+        keamanan: 'CCTV Koridor, Kunci Elektronik',
+        fasilitas_lainnya: 'Akses Parkir Terminal'
+      }
+    },
+    {
+      kode_aset: 'TIM-RMG-02',
+      jenis_aset: 'Ruangan',
+      nama_aset: 'Ruang Loket / Counter Check-in',
+      airport_id: createdAirports['TIM'].id,
+      zone_id: createdZones['TIM']['TERM'].id,
+      lokasi: 'Lantai 1, Area Check-in Terminal',
+      luas: 24,
+      satuan: 'm²',
+      kapasitas: '4-6 Petugas',
+      kondisi: 'Baik',
+      status: 'Available',
+      master_tariff_id: createdNonAircraftTariffs['TRF-RMG-IN-TBAC']?.id || null,
+      spesifikasi_detail: {
+        lokasi_zona: 'Di Dalam Terminal',
+        tipe_ruangan: 'Terbuka',
+        fasilitas_ac: true,
+        fasilitas_listrik: '1.300 VA',
+        fasilitas_air: '-',
+        toilet: 'Toilet Umum Terminal',
+        furniture: 'Counter built-in, Kursi petugas',
+        koneksi_internet: 'Tersedia (WiFi & LAN)',
+        keamanan: 'CCTV Area, Security Terminal',
+        fasilitas_lainnya: 'Akses langsung ke area keberangkatan'
+      }
+    },
+    {
+      kode_aset: 'TIM-RMG-03',
+      jenis_aset: 'Ruangan',
+      nama_aset: 'Ruang Rapat & Briefing',
+      airport_id: createdAirports['TIM'].id,
+      zone_id: createdZones['TIM']['TERM'].id,
+      lokasi: 'Lantai 2, Terminal Penumpang',
+      luas: 36,
+      satuan: 'm²',
+      kapasitas: '15-20 Orang',
+      kondisi: 'Baik',
+      status: 'Available',
+      master_tariff_id: createdNonAircraftTariffs['TRF-RMG-IN-TTAC']?.id || null,
+      spesifikasi_detail: {
+        lokasi_zona: 'Di Dalam Terminal',
+        tipe_ruangan: 'Tertutup',
+        fasilitas_ac: true,
+        fasilitas_listrik: '2.200 VA',
+        fasilitas_air: '-',
+        toilet: 'Toilet Umum Lantai 2',
+        furniture: 'Meja rapat, Kursi, Whiteboard, Proyektor',
+        koneksi_internet: 'Tersedia (WiFi)',
+        keamanan: 'CCTV, Kunci Manual',
+        fasilitas_lainnya: '-'
+      }
+    },
+
+    // ==========================================
+    // RUANGAN DI LUAR TERMINAL
+    // ==========================================
+    {
+      kode_aset: 'TIM-RMG-04',
+      jenis_aset: 'Ruangan',
+      nama_aset: 'Ruang Gudang Kargo',
+      airport_id: createdAirports['TIM'].id,
+      zone_id: createdZones['TIM']['COMM'].id,
+      lokasi: 'Area Kargo, Sisi Selatan Terminal',
+      luas: 120,
+      satuan: 'm²',
+      kapasitas: 'Penyimpanan Kargo',
+      kondisi: 'Baik',
+      status: 'Available',
+      master_tariff_id: createdNonAircraftTariffs['TRF-RMG-OUT-TT']?.id || null,
+      spesifikasi_detail: {
+        lokasi_zona: 'Di Luar Terminal',
+        tipe_ruangan: 'Tertutup',
+        fasilitas_ac: false,
+        fasilitas_listrik: '4.400 VA',
+        fasilitas_air: '-',
+        toilet: '1 Toilet',
+        furniture: 'Rak penyimpanan industrial',
+        koneksi_internet: '-',
+        keamanan: 'CCTV, Security 24 Jam',
+        fasilitas_lainnya: 'Loading dock, Akses kendaraan berat'
+      }
+    },
+    {
+      kode_aset: 'TIM-RMG-05',
+      jenis_aset: 'Ruangan',
+      nama_aset: 'Kios Area Parkir',
+      airport_id: createdAirports['TIM'].id,
+      zone_id: createdZones['TIM']['COMM'].id,
+      lokasi: 'Area Komersil, Depan Terminal',
+      luas: 18,
+      satuan: 'm²',
+      kapasitas: '2-3 Orang',
+      kondisi: 'Baik',
+      status: 'Available',
+      master_tariff_id: createdNonAircraftTariffs['TRF-RMG-OUT-TB']?.id || null,
+      spesifikasi_detail: {
+        lokasi_zona: 'Di Luar Terminal',
+        tipe_ruangan: 'Terbuka',
+        fasilitas_ac: false,
+        fasilitas_listrik: '900 VA',
+        fasilitas_air: '-',
+        toilet: 'Toilet Umum Area Parkir',
+        furniture: 'Meja display, Kursi',
+        koneksi_internet: '-',
+        keamanan: 'CCTV Area Parkir',
+        fasilitas_lainnya: 'Akses langsung pedestrian'
+      }
+    },
+    {
+      kode_aset: 'TIM-RMG-06',
+      jenis_aset: 'Ruangan',
+      nama_aset: 'Kantor Operasional Ground Handling',
+      airport_id: createdAirports['TIM'].id,
+      zone_id: createdZones['TIM']['SUPP'].id,
+      lokasi: 'Gedung Pendukung, Sisi Airside',
+      luas: 64,
+      satuan: 'm²',
+      kapasitas: '8-10 Orang',
+      kondisi: 'Baik',
+      status: 'Available',
+      master_tariff_id: createdNonAircraftTariffs['TRF-RMG-OUT-TTAC']?.id || null,
+      spesifikasi_detail: {
+        lokasi_zona: 'Di Luar Terminal',
+        tipe_ruangan: 'Tertutup',
+        fasilitas_ac: true,
+        fasilitas_listrik: '3.500 VA',
+        fasilitas_air: 'PAM',
+        toilet: '2 Toilet',
+        furniture: 'Meja kerja, Kursi, Loker, Papan informasi',
+        koneksi_internet: 'Tersedia (LAN & WiFi)',
+        keamanan: 'CCTV, Akses Badge',
+        fasilitas_lainnya: 'Akses langsung ke Apron'
+      }
+    },
   ];
 
   for (const asset of assetsData) {

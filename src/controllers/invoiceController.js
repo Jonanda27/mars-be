@@ -74,3 +74,81 @@ exports.generateOverstaySkrd = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.getUnbilledHanggarLogs = async (req, res, next) => {
+  try {
+    const logs = await invoiceService.getUnbilledHanggarLogs(req.query);
+    res.json({ success: true, data: logs });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.generateHanggarCheckoutInvoice = async (req, res, next) => {
+  try {
+    const { log_id, custom_rate } = req.body;
+    if (!log_id) {
+      return res.status(400).json({ success: false, message: 'log_id wajib disertakan' });
+    }
+    const invoice = await invoiceService.generateHanggarCheckoutInvoice(log_id, custom_rate);
+    res.status(201).json({ success: true, data: invoice, message: 'SKRD Sewa Hanggar (Check-Out) berhasil diterbitkan' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.generateHanggarPeriodicInvoice = async (req, res, next) => {
+  try {
+    const invoice = await invoiceService.generateHanggarPeriodicInvoice(req.body);
+    res.status(201).json({ success: true, data: invoice, message: 'SKRD Sewa Hanggar Rekapitulasi berhasil diterbitkan' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.generatePenaltyInvoice = async (req, res, next) => {
+  try {
+    const principalId = req.params.id;
+    const dinasUserId = req.user ? req.user.id : 1;
+    const invoice = await invoiceService.generatePenaltyInvoice(principalId, dinasUserId, req.body);
+    res.status(201).json({
+      success: true,
+      data: invoice,
+      message: 'SKRD Denda Keterlambatan berhasil diterbitkan.'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.cancelInvoice = async (req, res, next) => {
+  try {
+    const invoiceId = req.params.id;
+    const dinasUserId = req.user ? req.user.id : 1;
+    const { reason } = req.body;
+    const invoice = await invoiceService.cancelInvoice(invoiceId, dinasUserId, reason);
+    res.json({
+      success: true,
+      data: invoice,
+      message: 'Tagihan SKRD berhasil dibatalkan.'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.reissueInvoice = async (req, res, next) => {
+  try {
+    const invoiceId = req.params.id;
+    const dinasUserId = req.user ? req.user.id : 1;
+    const newInvoice = await invoiceService.reissueCorrectedInvoice(invoiceId, dinasUserId, req.body);
+    res.status(201).json({
+      success: true,
+      data: newInvoice,
+      message: 'SKRD Pengganti berhasil diterbitkan dan SKRD lama telah dibatalkan.'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+

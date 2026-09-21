@@ -14,7 +14,7 @@ exports.getAllContracts = async () => {
 
 exports.getContractById = async (id) => {
   const contract = await prisma.contracts.findUnique({
-    where: { id: parseInt(id) },
+    where: { id: Number.parseInt(id, 10) },
     include: {
       tenants: true,
       assets: true,
@@ -28,11 +28,11 @@ exports.getContractById = async (id) => {
 
 exports.updateContract = async (id, payload) => {
   return await prisma.contracts.update({
-    where: { id: parseInt(id) },
+    where: { id: Number.parseInt(id, 10) },
     data: {
       contract_number: payload.contract_number,
-      deposit_jaminan: payload.deposit_jaminan !== undefined ? parseFloat(payload.deposit_jaminan) : undefined,
-      total_amount: payload.total_amount !== undefined ? parseFloat(payload.total_amount) : undefined,
+      deposit_jaminan: payload.deposit_jaminan !== undefined ? Number.parseFloat(payload.deposit_jaminan) : undefined,
+      total_amount: payload.total_amount !== undefined ? Number.parseFloat(payload.total_amount) : undefined,
       status: payload.status,
       fasilitas: payload.fasilitas !== undefined ? payload.fasilitas : undefined,
       denda: payload.denda !== undefined ? payload.denda : undefined,
@@ -44,7 +44,7 @@ exports.updateContract = async (id, payload) => {
 
 exports.getContractsByTenant = async (tenantId) => {
   return await prisma.contracts.findMany({
-    where: { tenant_id: parseInt(tenantId) },
+    where: { tenant_id: Number.parseInt(tenantId, 10) },
     include: {
       tenants: true,
       assets: true,
@@ -57,8 +57,8 @@ exports.getContractsByTenant = async (tenantId) => {
 exports.getContractByIdAndTenant = async (id, tenantId) => {
   const contract = await prisma.contracts.findFirst({
     where: { 
-      id: parseInt(id),
-      tenant_id: parseInt(tenantId)
+      id: Number.parseInt(id, 10),
+      tenant_id: Number.parseInt(tenantId, 10)
     },
     include: {
       tenants: true,
@@ -78,7 +78,7 @@ exports.updateContractStatusByTenant = async (id, tenantId, status, tenant_signa
   }
 
   const updatedContract = await prisma.contracts.update({
-    where: { id: parseInt(id) },
+    where: { id: Number.parseInt(id, 10) },
     data: { 
       status,
       tenant_signature: tenant_signature !== undefined ? tenant_signature : undefined
@@ -114,17 +114,17 @@ exports.extendContract = async (id, tenantId, newEndDate) => {
 
   // Preserve specific needs from original application if available
   let specificNeeds = null;
-  if (contract.rental_applications && contract.rental_applications.specific_needs) {
+  if (contract.rental_applications?.specific_needs) {
     specificNeeds = contract.rental_applications.specific_needs;
   }
 
   const newApplication = await prisma.rental_applications.create({
     data: {
       application_number: applicationNumber,
-      tenant_id: parseInt(tenantId),
+      tenant_id: Number.parseInt(tenantId, 10),
       asset_id: contract.asset_id,
       purpose: `Perpanjangan Kontrak No: ${contract.contract_number}`,
-      specific_needs: specificNeeds ? JSON.parse(JSON.stringify(specificNeeds)) : null,
+      specific_needs: specificNeeds ? structuredClone(specificNeeds) : null,
       start_date: newStartDate,
       end_date: parsedNewEndDate,
       status: 'Pending'
@@ -136,14 +136,14 @@ exports.extendContract = async (id, tenantId, newEndDate) => {
 
 exports.terminateContract = async (id) => {
   const contract = await prisma.contracts.findUnique({
-    where: { id: parseInt(id) }
+    where: { id: Number.parseInt(id, 10) }
   });
 
   if (!contract) throw new Error('Contract not found');
 
   // Update contract status to Terminated
   const updatedContract = await prisma.contracts.update({
-    where: { id: parseInt(id) },
+    where: { id: Number.parseInt(id, 10) },
     data: { status: 'Terminated' }
   });
 
@@ -194,46 +194,120 @@ exports.terminateContract = async (id) => {
 };
 
 exports.uploadSignature = async (id, tenantId, fileUrl) => {
-  const contract = await prisma.contracts.findUnique({ where: { id: parseInt(id) } });
+  const contract = await prisma.contracts.findUnique({ where: { id: Number.parseInt(id, 10) } });
   if (!contract) throw new Error('Contract not found');
-  if (contract.tenant_id !== parseInt(tenantId)) throw new Error('Unauthorized');
+  if (contract.tenant_id !== Number.parseInt(tenantId, 10)) throw new Error('Unauthorized');
   
-  if (contract.status !== 'Menunggu TTD Tenant' && contract.status !== 'Draft') {
+  if (contract.status !== 'Menunggu TTD Tenant' && contract.status !== 'Draft' && contract.status !== 'Review') {
     throw new Error('Contract is not waiting for signature');
   }
 
-  return await prisma.contracts.update({
-    where: { id: parseInt(id) },
+  // Update the contract: signed document uploaded, waiting for Kadis endorsement
+  const updatedContract = await prisma.contracts.update({
+    where: { id: Number.parseInt(id, 10) },
     data: {
       signed_document_url: fileUrl,
-      status: 'Menunggu Verifikasi Admin'
+      tenant_signature: new Date().toISOString(),
+      status: 'Menunggu Pengesahan Kadis'
     }
   });
+
+  return updatedContract;
 };
 
-exports.verifyContract = async (id) => {
-  const contract = await prisma.contracts.findUnique({ where: { id: parseInt(id) } });
+exports.approveContractByKadis = async (id, kadisName = 'Kepala Dinas') => {
+  const contractId = Number.parseInt(id, 10);
+  const contract = await prisma.contracts.findUnique({ 
+    where: { id: contractId },
+    include: { rental_applications: true, assets: true, tenants: true }
+  });
   if (!contract) throw new Error('Contract not found');
 
-  if (contract.status !== 'Menunggu Verifikasi Admin') {
-    throw new Error('Contract is not waiting for verification');
-  }
-
-  return await prisma.$transaction(async (tx) => {
-    // 1. Update contract status to Aktif
-    const updatedContract = await tx.contracts.update({
-      where: { id: parseInt(id) },
+  const updatedContract = await prisma.$transaction(async (tx) => {
+    // 1. Update contract status to Aktif and record Kadis signature timestamp / name
+    const updated = await tx.contracts.update({
+      where: { id: contractId },
       data: {
-        status: 'Aktif'
+        status: 'Aktif',
+        admin_signature: `Disahkan oleh ${kadisName} pada ${new Date().toLocaleString('id-ID')}`
       }
     });
 
     // 2. Also update the linked rental_application status
+    // For Payung contract: status permohonan menjadi 'Surat Disetujui' (sehingga tenant bisa lanjut memilih detail aset / armada)
+    // For regular/room contract: status permohonan menjadi 'Signed'
+    const isPayung = contract.contract_type === 'Payung';
+    const appTargetStatus = isPayung ? 'Surat Disetujui' : 'Signed';
+
     await tx.rental_applications.updateMany({
-      where: { contract_id: parseInt(id) },
-      data: { status: 'Signed' }
+      where: { contract_id: contractId },
+      data: { status: appTargetStatus }
     });
 
-    return updatedContract;
+    // 3. Link aircrafts to this asset if they were selected in the application
+    if (contract.rental_applications && contract.rental_applications.length > 0) {
+      const app = contract.rental_applications[0];
+      if (app.specific_needs && Array.isArray(app.specific_needs.aircraft_ids)) {
+        const aircraftIds = app.specific_needs.aircraft_ids
+          .map(aid => Number.parseInt(aid, 10))
+          .filter(aid => !Number.isNaN(aid));
+        if (aircraftIds.length > 0) {
+          await tx.aircrafts.updateMany({
+            where: { id: { in: aircraftIds } },
+            data: { asset_id: contract.asset_id }
+          });
+        }
+      }
+    }
+
+    return updated;
   });
+
+  // Untuk sewa ruangan: terbitkan penetapan SKRD di awal secara otomatis saat kontrak aktif
+  const isRuangan = Boolean(
+    (contract.assets?.jenis_aset || '').toLowerCase().includes('ruang') ||
+    contract.contract_type !== 'Payung'
+  );
+  if (isRuangan) {
+    try {
+      await invoiceService.generateInvoice(contract.id);
+    } catch (invErr) {
+      console.error('Auto generate SKRD for room rental error:', invErr);
+    }
+  }
+
+  return updatedContract;
 };
+
+exports.rejectContractByKadis = async (id, reason = 'Dokumen PKS belum lengkap atau perlu revisi') => {
+  const contractId = Number.parseInt(id, 10);
+  const contract = await prisma.contracts.findUnique({ 
+    where: { id: contractId },
+    include: { rental_applications: true, tenants: true }
+  });
+  if (!contract) throw new Error('Contract not found');
+
+  const updatedContract = await prisma.$transaction(async (tx) => {
+    const updated = await tx.contracts.update({
+      where: { id: contractId },
+      data: {
+        status: 'Perlu Revisi',
+        admin_signature: `Catatan Revisi: ${reason} (${new Date().toLocaleString('id-ID')})`
+      }
+    });
+
+    await tx.rental_applications.updateMany({
+      where: { contract_id: contractId },
+      data: { status: 'Perlu Revisi' }
+    });
+
+    return updated;
+  });
+
+  return updatedContract;
+};
+
+exports.verifyContract = async (id) => {
+  return await exports.approveContractByKadis(id, 'Admin / Dinas');
+};
+
