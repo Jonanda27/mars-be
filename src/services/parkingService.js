@@ -305,9 +305,9 @@ const settleHandover = async (user, handoverId, data) => {
   const actual_cash_settled = Math.round(actualCash);
   const unmatched_amount = actual_cash_settled - expected_amount;
 
-  // Aturan Validasi: Jika unmatched_amount < 0, notes WAJIB diisi
-  if (unmatched_amount < 0 && (!notes || notes.trim() === '')) {
-    const error = new Error(`Terjadi selisih kurang (defisit) sebesar Rp ${Math.abs(unmatched_amount).toLocaleString('id-ID')}. Kolom alasan/keterangan selisih wajib diisi.`);
+  // Aturan Kebijakan Zero Discrepancy: Tidak boleh ada selisih setoran
+  if (unmatched_amount !== 0) {
+    const error = new Error(`Tidak boleh ada selisih setoran parkir manual. Petugas parkir wajib menyerahkan uang tepat Rp ${expected_amount.toLocaleString('id-ID')} sesuai dengan ${sold_qty} lembar karcis yang dibawa/terjual.`);
     error.statusCode = 400;
     throw error;
   }

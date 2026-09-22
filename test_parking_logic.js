@@ -48,39 +48,34 @@ function testMathCalculations() {
 }
 
 // -------------------------------------------------------------
-// TEST 2: Validasi Kewajiban Alasan pada Selisih Kurang (Defisit)
+// TEST 2: Validasi Kebijakan Zero Discrepancy (Larangan Keras Selisih)
 // -------------------------------------------------------------
-function testNotesValidationOnDeficit() {
-  console.log('[TEST 2] Menguji kewajiban catatan jika terjadi defisit...');
+function testZeroDiscrepancyRule() {
+  console.log('[TEST 2] Menguji penegakan kebijakan Zero Discrepancy (tanpa selisih)...');
 
-  const validateSettle = (unmatched, notes) => {
-    if (unmatched < 0 && (!notes || notes.trim() === '')) {
-      throw new Error('Wajib mengisi alasan/keterangan selisih kurang');
+  const validateSettle = (unmatched, expectedAmount, soldQty) => {
+    if (unmatched !== 0) {
+      throw new Error(`Tidak boleh ada selisih setoran parkir manual. Petugas parkir wajib menyerahkan uang tepat Rp ${expectedAmount.toLocaleString('id-ID')} sesuai dengan ${soldQty} lembar karcis yang dibawa/terjual.`);
     }
     return true;
   };
 
+  // Kasus Defisit (Uang kurang): Wajib ditolak keras meskipun ada alasan
   assert.throws(() => {
-    validateSettle(-5000, '');
-  }, /Wajib mengisi alasan/, 'Defisit tanpa alasan wajib ditolak');
+    validateSettle(-5000, 80000, 40);
+  }, /Tidak boleh ada selisih setoran parkir manual/, 'Setoran defisit wajib ditolak');
 
+  // Kasus Surplus (Uang lebih): Wajib ditolak keras
   assert.throws(() => {
-    validateSettle(-5000, '   ');
-  }, /Wajib mengisi alasan/, 'Defisit dengan spasi kosong wajib ditolak');
+    validateSettle(2000, 80000, 40);
+  }, /Tidak boleh ada selisih setoran parkir manual/, 'Setoran surplus wajib ditolak');
 
+  // Kasus Pas / Klop (Zero Discrepancy): Wajib diterima
   assert.doesNotThrow(() => {
-    validateSettle(-5000, '2 lembar rusak fisik robek kena hujan');
-  }, 'Defisit dengan alasan valid harus diterima');
+    validateSettle(0, 80000, 40);
+  }, 'Setoran pas tanpa selisih harus diterima');
 
-  assert.doesNotThrow(() => {
-    validateSettle(0, '');
-  }, 'Selisih nol tanpa alasan harus diterima');
-
-  assert.doesNotThrow(() => {
-    validateSettle(2000, '');
-  }, 'Surplus tanpa alasan harus diterima');
-
-  console.log('✔ [TEST 2 BERHASIL] Validasi audit defisit berfungsi sesuai spesifikasi DoD.\n');
+  console.log('✔ [TEST 2 BERHASIL] Kebijakan Zero Discrepancy terbukti mengunci selisih secara ketat.\n');
 }
 
 // -------------------------------------------------------------
@@ -212,7 +207,7 @@ function testAuditLeakageThresholds() {
 
 // Jalankan semua test
 testMathCalculations();
-testNotesValidationOnDeficit();
+testZeroDiscrepancyRule();
 testBookStatusTransition();
 testOrphanedSerialsPrevention();
 testAtomicConcurrencyLock();
