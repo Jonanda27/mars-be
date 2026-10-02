@@ -19,7 +19,7 @@ const getTenantUserId = async (tenantId) => {
 
 exports.getAllContracts = async (req, res, next) => {
   try {
-    const contracts = await contractService.getAllContracts();
+    const contracts = await contractService.getAllContracts(req.user);
     res.status(200).json({ success: true, data: contracts });
   } catch (error) {
     next(error);
@@ -29,6 +29,17 @@ exports.getAllContracts = async (req, res, next) => {
 exports.getContractById = async (req, res, next) => {
   try {
     const contract = await contractService.getContractById(req.params.id);
+    const userRole = (req.user?.role || '').toLowerCase();
+    if (userRole === 'admin_mini_airport' && req.user?.mini_airport_id) {
+      const f = (contract.fasilitas && typeof contract.fasilitas === 'object') ? contract.fasilitas : {};
+      const fId = f.mini_airport_id ? Number(f.mini_airport_id) : null;
+      if (fId && fId !== Number(req.user.mini_airport_id)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Anda tidak memiliki hak akses untuk kontrak di luar wilayah Mini Airport Anda.'
+        });
+      }
+    }
     res.status(200).json({ success: true, data: contract });
   } catch (error) {
     next(error);
@@ -197,4 +208,30 @@ exports.verifyContract = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.createEmergencyContract = async (req, res, next) => {
+  try {
+    const result = await contractService.createEmergencyContract(req.body, req.user);
+    res.status(201).json({
+      success: true,
+      message: 'PKS Pendaratan Darurat berhasil dibuat dan diaktifkan.',
+      data: result
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getEmergencyActiveContracts = async (req, res, next) => {
+  try {
+    const contracts = await contractService.getEmergencyActiveContracts();
+    res.status(200).json({
+      success: true,
+      data: contracts
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 

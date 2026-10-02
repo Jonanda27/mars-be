@@ -163,8 +163,27 @@ exports.getTenantApplications = async (req, res, next) => {
 
 exports.getAllApplications = async (req, res, next) => {
   try {
-    const airportId = req.user.role.toLowerCase() === 'superadmin' ? null : req.user.airport_id;
-    const apps = await rentalService.getAllApplications(airportId);
+    const userRole = (req.user?.role || '').toLowerCase();
+    const isGlobal = ['superadmin', 'kepala dinas', 'dinas'].includes(userRole);
+    const isAdminMini = userRole === 'admin_mini_airport';
+
+    let airportId = null;
+    let miniAirportId = null;
+
+    if (isGlobal) {
+      airportId = null;
+      miniAirportId = null;
+    } else if (isAdminMini) {
+      // Role admin_mini_airport: Khusus permohonan Mini Airport
+      airportId = null;
+      miniAirportId = req.user?.mini_airport_id || 'ALL_MINI';
+    } else {
+      // Role admin: Khusus permohonan Bandara Mozes Kilangin (Sewa Hanggar, Apron, Ruangan)
+      airportId = req.user?.airport_id || 1;
+      miniAirportId = null;
+    }
+
+    const apps = await rentalService.getAllApplications(airportId, miniAirportId);
     res.status(200).json({ success: true, data: apps });
   } catch (error) {
     next(error);
@@ -174,6 +193,38 @@ exports.getAllApplications = async (req, res, next) => {
 exports.getApplicationById = async (req, res, next) => {
   try {
     const app = await rentalService.getApplicationById(req.params.id);
+    if (!app) {
+      return res.status(404).json({ success: false, message: 'Permohonan tidak ditemukan' });
+    }
+
+    const userRole = (req.user?.role || '').toLowerCase();
+    const isGlobal = ['superadmin', 'kepala dinas', 'dinas', 'tenant'].includes(userRole);
+    if (!isGlobal) {
+      let spec = app.specific_needs;
+      if (typeof spec === 'string') {
+        try { spec = JSON.parse(spec); } catch (e) { spec = {}; }
+      }
+      const isMini = (app.application_type || '').toLowerCase().includes('mini');
+      const targetMiniId = spec?.mini_airport_id || spec?.airport_id;
+
+      if (userRole === 'admin_mini_airport' || req.user?.mini_airport_id) {
+        if (!isMini || (req.user?.mini_airport_id && Number(targetMiniId) !== Number(req.user.mini_airport_id))) {
+          return res.status(403).json({
+            success: false,
+            message: 'Anda tidak memiliki hak akses untuk permohonan di luar wilayah Mini Airport Anda.'
+          });
+        }
+      } else {
+        const userAirportId = req.user?.airport_id || 1;
+        if (isMini || (app.assets?.airport_id && Number(app.assets.airport_id) !== Number(userAirportId))) {
+          return res.status(403).json({
+            success: false,
+            message: 'Anda tidak memiliki hak akses untuk permohonan di luar bandara Anda.'
+          });
+        }
+      }
+    }
+
     res.status(200).json({ success: true, data: app });
   } catch (error) {
     next(error);
@@ -183,18 +234,69 @@ exports.getApplicationById = async (req, res, next) => {
 exports.updateApplicationStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { status, asset_id } = req.body;
-    const app = await rentalService.updateApplicationStatus(id, status, asset_id);
+    const { status, asset_id, allocated_stand } = req.body;
+
+    const existingApp = await rentalService.getApplicationById(id);
+    if (!existingApp) {
+      return res.status(404).json({ success: false, message: 'Permohonan tidak ditemukan' });
+    }
+
+    let spec = existingApp.specific_needs;
+    if (typeof spec === 'string') {
+      try { spec = JSON.parse(spec); } catch (e) { spec = {}; }
+    }
+    const isMini = (existingApp.application_type || '').toLowerCase().includes('mini');
+    const targetMiniId = spec?.mini_airport_id || spec?.airport_id;
+
+    const userRole = (req.user?.role || '').toLowerCase();
+    const isGlobal = ['superadmin', 'kepala dinas', 'dinas'].includes(userRole);
+    if (!isGlobal) {
+      if (req.user?.mini_airport_id) {
+        if (!isMini || Number(targetMiniId) !== Number(req.user.mini_airport_id)) {
+          return res.status(403).json({
+            success: false,
+            message: 'Anda hanya berhak memvalidasi permohonan yang ditujukan ke Mini Airport wilayah Anda.'
+          });
+        }
+      } else {
+        const userAirportId = req.user?.airport_id || 1;
+        if (isMini || (existingApp.assets?.airport_id && Number(existingApp.assets.airport_id) !== Number(userAirportId))) {
+          return res.status(403).json({
+            success: false,
+            message: 'Anda tidak memiliki hak akses untuk memvalidasi permohonan di luar bandara Anda.'
+          });
+        }
+      }
+    }
+
+    // Validasi apakah stand yang dipilih kosong pada tanggal landing
+    if (isMini && status === 'Aktif' && allocated_stand && targetMiniId) {
+      const standAvailability = await rentalService.getMiniAirportStandAvailability(
+        targetMiniId,
+        spec?.landing_date,
+        id
+      );
+      const targetStand = standAvailability.find(s => s.stand === allocated_stand);
+      if (targetStand && targetStand.is_occupied) {
+        return res.status(400).json({
+          success: false,
+          message: `Stand ${allocated_stand} sedang terisi (${targetStand.occupied_by ? `oleh ${targetStand.occupied_by}` : targetStand.status}). Silakan pilih stand lain yang masih kosong.`
+        });
+      }
+    }
+
+    const app = await rentalService.updateApplicationStatus(id, status, asset_id, allocated_stand);
     
     // Notify the tenant about the status change
     const tenantUserId = await getTenantUserId(app.tenant_id);
     if (tenantUserId) {
+      const isMiniApp = (app.application_type || '').toLowerCase().includes('mini');
       createNotification(
         tenantUserId, 
         'Status Permohonan Diperbarui', 
-        `Permohonan sewa Anda (${app.application_number}) sekarang berstatus: ${status}`, 
-        status === 'Surat Disetujui' || status === 'Draft PKS' || status === 'Draft Kontrak' ? 'SUCCESS' : 'INFO', 
-        `/tenant/permohonan/${id}`
+        `Permohonan Anda (${app.application_number}) sekarang berstatus: ${status}`, 
+        status === 'Surat Disetujui' || status === 'Aktif' || status === 'Draft PKS' || status === 'Draft Kontrak' ? 'SUCCESS' : 'INFO', 
+        isMiniApp ? '/tenant/mini-airport' : `/tenant/permohonan/${id}`
       );
     }
 
@@ -318,3 +420,129 @@ exports.uploadOfficialLetter = async (req, res, next) => {
     next(error);
   }
 };
+
+// =========================================================================
+// CONTROLLER: PERPANJANGAN MASA SEWA (LEASE EXTENSION)
+// =========================================================================
+
+exports.requestExtension = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user?.tenant_id || null;
+    const updatedApp = await rentalService.requestExtension(id, tenantId, req.body);
+
+    // Notify Admin UPBU
+    await notifyRole(
+      'admin',
+      'Pengajuan Perpanjangan Sewa',
+      `Tenant ${updatedApp.tenants?.nama_perusahaan || ''} mengajukan perpanjangan masa sewa untuk ${updatedApp.application_number} hingga ${req.body.requested_end_date}.`,
+      'INFO',
+      '/admin/permohonan'
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'Pengajuan perpanjangan sewa berhasil dikirim dan menunggu verifikasi Admin UPBU',
+      data: updatedApp
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getPendingExtensions = async (req, res, next) => {
+  try {
+    const airportId = req.user?.airport_id || null;
+    const pendingExtensions = await rentalService.getPendingExtensions(airportId);
+    res.status(200).json({
+      success: true,
+      data: pendingExtensions
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getAssetAvailabilityForExtension = async (req, res, next) => {
+  try {
+    const { airport_id, startDate, endDate, excludeApplicationId, category } = req.query;
+    const effectiveAirportId = airport_id || req.user?.airport_id || null;
+    const availability = await rentalService.getAssetAvailabilityForExtension(
+      effectiveAirportId,
+      startDate,
+      endDate,
+      excludeApplicationId,
+      category
+    );
+    res.status(200).json({
+      success: true,
+      data: availability
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.reviewExtension = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const updatedApp = await rentalService.reviewExtension(id, req.user, req.body);
+
+    const isApproved = req.body.action === 'APPROVE';
+    const tenantUserId = await getTenantUserId(updatedApp.tenant_id);
+
+    if (tenantUserId) {
+      if (isApproved) {
+        const spec = typeof updatedApp.specific_needs === 'string'
+          ? JSON.parse(updatedApp.specific_needs)
+          : (updatedApp.specific_needs || {});
+        const targetName = spec.extension_request?.allocated_asset_name || updatedApp.assets?.nama_aset || 'Fasilitas Bandara';
+        const isRelocated = spec.extension_request?.is_relocated;
+
+        let msg = `Pengajuan perpanjangan sewa Anda (${updatedApp.application_number}) telah DISETUJUI hingga ${spec.extension_request?.requested_end_date}.`;
+        if (isRelocated) {
+          msg += ` Penempatan pesawat dialokasikan ke: ${targetName}.`;
+        }
+
+        await createNotification(
+          tenantUserId,
+          'Perpanjangan Sewa Disetujui',
+          msg,
+          'SUCCESS',
+          `/tenant/jadwal-hanggar`
+        );
+      } else {
+        await createNotification(
+          tenantUserId,
+          'Perpanjangan Sewa Ditolak',
+          `Pengajuan perpanjangan sewa Anda (${updatedApp.application_number}) ditolak oleh Admin UPBU. Catatan: ${req.body.admin_notes || 'Tidak memenuhi ketersediaan kapasitas.'}`,
+          'WARNING',
+          `/tenant/jadwal-hanggar`
+        );
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Perpanjangan sewa berhasil ${isApproved ? 'disetujui' : 'ditolak'}`,
+      data: updatedApp
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getMiniAirportStandAvailability = async (req, res, next) => {
+  try {
+    const { airport_id, date, exclude_id } = req.query;
+    if (!airport_id) {
+      return res.status(400).json({ success: false, message: 'airport_id query parameter is required' });
+    }
+
+    const stands = await rentalService.getMiniAirportStandAvailability(airport_id, date, exclude_id);
+    res.status(200).json({ success: true, data: stands });
+  } catch (error) {
+    next(error);
+  }
+};
+

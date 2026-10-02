@@ -40,7 +40,7 @@ exports.deleteAsset = async (id) => {
   });
 };
 
-exports.getHangarCapacity = async (assetId) => {
+exports.getHangarCapacity = async (assetId, excludeApplicationId = null) => {
   const asset = await prisma.assets.findUnique({ where: { id: parseInt(assetId) } });
   if (!asset) throw new Error('Asset not found');
 
@@ -53,45 +53,74 @@ exports.getHangarCapacity = async (assetId) => {
     };
   }
 
-  // Hitung kapasitas yang sudah terpakai dari permohonan sewa (booking) yang berstatus Approved
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const whereClause = {
+    asset_id: parseInt(assetId),
+    status: {
+      in: [
+        'Aktif',
+        'Active',
+        'Approved',
+        'Disetujui',
+        'Signed',
+        'Draft Kontrak',
+        'Menunggu Validasi Admin',
+        'Menunggu Persetujuan Kadis',
+        'Menunggu TTD Kontrak Payung',
+        'Menunggu Pengesahan Kadis'
+      ]
+    },
+    OR: [
+      { end_date: null },
+      { end_date: { gte: today } }
+    ]
+  };
+
+  if (excludeApplicationId) {
+    whereClause.id = { not: parseInt(excludeApplicationId) };
+  }
+
+  // Hitung kapasitas yang sudah terpakai dari permohonan sewa (booking) aktif
   const activeApplications = await prisma.rental_applications.findMany({
-    where: {
-      asset_id: parseInt(assetId),
-      status: 'Approved',
-      // Opsional: hanya hitung yang end_date nya masih aktif / belum lewat
-      end_date: {
-        gte: new Date()
-      }
-    }
+    where: whereClause
   });
 
   let usedArea = 0;
   for (const app of activeApplications) {
-    if (app.specific_needs && Array.isArray(app.specific_needs.aircraft_details)) {
-      for (const detail of app.specific_needs.aircraft_details) {
-        const aircraftType = await prisma.aircraft_types.findUnique({
-          where: { id: parseInt(detail.aircraft_type_id) }
-        });
-        if (aircraftType) {
-          usedArea += parseFloat(aircraftType.luas_efektif_m2 || 0);
+    const spec = typeof app.specific_needs === 'string'
+      ? JSON.parse(app.specific_needs)
+      : (app.specific_needs || {});
+
+    if (Array.isArray(spec.aircraft_details)) {
+      for (const detail of spec.aircraft_details) {
+        if (detail.luas_efektif_m2) {
+          usedArea += parseFloat(detail.luas_efektif_m2);
+        } else if (detail.aircraft_type_id) {
+          const aircraftType = await prisma.aircraft_types.findUnique({
+            where: { id: parseInt(detail.aircraft_type_id) }
+          });
+          if (aircraftType && aircraftType.luas_efektif_m2) {
+            usedArea += parseFloat(aircraftType.luas_efektif_m2);
+          }
         }
       }
-    } else if (app.specific_needs && Array.isArray(app.specific_needs.aircraft_ids)) {
-      // Fallback for old data
-      for (const acId of app.specific_needs.aircraft_ids) {
+    } else if (Array.isArray(spec.aircraft_ids)) {
+      for (const acId of spec.aircraft_ids) {
         const aircraft = await prisma.aircrafts.findUnique({
           where: { id: parseInt(acId) },
           include: { aircraft_types: true }
         });
-        if (aircraft && aircraft.aircraft_types) {
-          usedArea += parseFloat(aircraft.aircraft_types.luas_efektif_m2 || 0);
+        if (aircraft && aircraft.aircraft_types && aircraft.aircraft_types.luas_efektif_m2) {
+          usedArea += parseFloat(aircraft.aircraft_types.luas_efektif_m2);
         }
       }
     }
   }
 
   const totalArea = parseFloat(asset.luas || 0);
-  const remainingArea = totalArea - usedArea;
+  const remainingArea = Math.max(0, totalArea - usedArea);
 
   return {
     isHangar: true,
@@ -100,3 +129,6 @@ exports.getHangarCapacity = async (assetId) => {
     remainingArea
   };
 };
+
+exports.getAssetCapacity = exports.getHangarCapacity;
+

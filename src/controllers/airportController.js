@@ -69,10 +69,23 @@ const deleteAirport = async (req, res, next) => {
   }
 };
 
+const getAllMiniAirports = async (req, res, next) => {
+  try {
+    const miniAirports = await airportService.getAllMiniAirports();
+    res.json({
+      status: 'success',
+      data: miniAirports
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getAllAirports,
   getAirportById,
   createAirport,
   updateAirport,
-  deleteAirport
+  deleteAirport,
+  getAllMiniAirports
 };

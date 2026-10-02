@@ -23,20 +23,26 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-router.get('/', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Kepala Dinas'), invoiceController.getAllInvoices);
-router.get('/tenant', protect, authorize('Tenant'), invoiceController.getTenantInvoices);
-router.get('/unbilled-hanggar', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Warden'), invoiceController.getUnbilledHanggarLogs);
-router.post('/generate-hanggar-checkout', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Warden'), invoiceController.generateHanggarCheckoutInvoice);
-router.post('/generate-hanggar-periodic', protect, authorize('Admin', 'Super Admin', 'Dinas'), invoiceController.generateHanggarPeriodicInvoice);
+router.get('/', protect, authorize('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), invoiceController.getAllInvoices);
+router.get('/tenant', protect, authorize('tenant'), invoiceController.getTenantInvoices);
+router.get('/unbilled-hanggar', protect, authorize('admin', 'superadmin', 'dinas', 'petugas'), invoiceController.getUnbilledHanggarLogs);
+router.post('/generate-hanggar-checkout', protect, authorize('admin', 'superadmin', 'dinas', 'petugas'), invoiceController.generateHanggarCheckoutInvoice);
+router.post('/generate-hanggar-periodic', protect, authorize('admin', 'superadmin', 'dinas'), invoiceController.generateHanggarPeriodicInvoice);
+
+// Mini Airport SKRD Routes
+router.post('/generate-mini-airport-skrd/:logId', protect, authorize('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), invoiceController.generateMiniAirportSkrd);
+
+// Public Routes for Emergency Payment (Tamu Maskapai Pendaratan Darurat Tanpa Akun)
+router.get('/emergency-payment/:token', invoiceController.getEmergencyInvoiceByToken);
+router.post('/emergency-payment/:token/upload', upload.single('receipt'), invoiceController.uploadEmergencyPaymentReceipt);
+
 router.get('/:id', protect, invoiceController.getInvoiceById);
-router.post('/generate-skrd/:contractId', protect, authorize('Admin', 'Super Admin', 'Dinas'), invoiceController.generateSkrd);
-router.post('/generate-skrd-overstay/:logId', protect, authorize('Admin', 'Super Admin', 'Dinas'), invoiceController.generateOverstaySkrd);
-router.post('/:id/upload-receipt', protect, authorize('Tenant'), upload.single('receipt'), invoiceController.uploadReceipt);
-router.post('/:id/verify', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Kepala Dinas'), invoiceController.verifyPayment);
-router.post('/:id/generate-penalty', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Kepala Dinas', 'dinas', 'kepala dinas'), invoiceController.generatePenaltyInvoice);
-router.post('/:id/cancel', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Kepala Dinas', 'dinas', 'kepala dinas'), invoiceController.cancelInvoice);
-router.post('/:id/reissue', protect, authorize('Admin', 'Super Admin', 'Dinas', 'Kepala Dinas', 'dinas', 'kepala dinas'), invoiceController.reissueInvoice);
+router.post('/generate-skrd/:contractId', protect, authorize('admin', 'admin_mini_airport', 'superadmin', 'dinas'), invoiceController.generateSkrd);
+router.post('/generate-skrd-overstay/:logId', protect, authorize('admin', 'admin_mini_airport', 'superadmin', 'dinas'), invoiceController.generateOverstaySkrd);
+router.post('/:id/upload-receipt', protect, authorize('tenant'), upload.single('receipt'), invoiceController.uploadReceipt);
+router.post('/:id/verify', protect, authorize('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), invoiceController.verifyPayment);
+router.post('/:id/generate-penalty', protect, authorize('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), invoiceController.generatePenaltyInvoice);
+router.post('/:id/cancel', protect, authorize('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), invoiceController.cancelInvoice);
+router.post('/:id/reissue', protect, authorize('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), invoiceController.reissueInvoice);
 
 module.exports = router;
-
-

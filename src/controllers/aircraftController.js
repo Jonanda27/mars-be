@@ -42,7 +42,8 @@ exports.getTenantAircrafts = async (req, res, next) => {
     if (!tenantId) {
       return res.status(403).json({ success: false, message: 'User is not a tenant' });
     }
-    const aircrafts = await aircraftService.fetchAircraftsByTenant(tenantId);
+    const onlyAvailable = req.query.available === 'true' || req.query.only_available === 'true';
+    const aircrafts = await aircraftService.fetchAircraftsByTenant(tenantId, { onlyAvailable });
     res.status(200).json({ success: true, data: aircrafts });
   } catch (error) {
     next(error);

@@ -6,19 +6,23 @@ const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddlewar
 const upload = require('../middlewares/upload');
 
 // Tenant Routes
-router.get('/tenant', authMiddleware, authorizeRoles('Tenant'), contractController.getTenantContracts);
-router.get('/tenant/:id', authMiddleware, authorizeRoles('Tenant'), contractController.getTenantContractById);
-router.put('/tenant/:id/status', authMiddleware, authorizeRoles('Tenant'), contractController.updateContractStatusByTenant);
-router.post('/tenant/:id/extend', authMiddleware, authorizeRoles('Tenant'), contractController.extendContract);
-router.post('/tenant/:id/upload-signature', authMiddleware, authorizeRoles('Tenant'), upload.single('signature_file'), contractController.uploadSignature);
+router.get('/tenant', authMiddleware, authorizeRoles('tenant'), contractController.getTenantContracts);
+router.get('/tenant/:id', authMiddleware, authorizeRoles('tenant'), contractController.getTenantContractById);
+router.put('/tenant/:id/status', authMiddleware, authorizeRoles('tenant'), contractController.updateContractStatusByTenant);
+router.post('/tenant/:id/extend', authMiddleware, authorizeRoles('tenant'), contractController.extendContract);
+router.post('/tenant/:id/upload-signature', authMiddleware, authorizeRoles('tenant'), upload.single('signature_file'), contractController.uploadSignature);
+
+// Emergency Contracts (PKS Pendaratan Darurat)
+router.get('/emergency-active', authMiddleware, authorizeRoles('petugas', 'petugas_mini_airport', 'admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), contractController.getEmergencyActiveContracts);
+router.post('/emergency', authMiddleware, authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), contractController.createEmergencyContract);
 
 // Admin, Dinas & Eksekutif (Kepala Dinas) Routes
-router.get('/', authMiddleware, authorizeRoles('Admin', 'Superadmin', 'Dinas', 'Kepala Dinas'), contractController.getAllContracts);
-router.get('/:id', authMiddleware, authorizeRoles('Admin', 'Superadmin', 'Dinas', 'Kepala Dinas'), contractController.getContractById);
-router.put('/:id', authMiddleware, authorizeRoles('Admin', 'Superadmin', 'Dinas', 'Kepala Dinas'), contractController.updateContract);
-router.patch('/:id/approve-kadis', authMiddleware, authorizeRoles('Admin', 'Superadmin', 'Dinas', 'Kepala Dinas'), contractController.approveByKadis);
-router.patch('/:id/reject-kadis', authMiddleware, authorizeRoles('Admin', 'Superadmin', 'Dinas', 'Kepala Dinas'), contractController.rejectByKadis);
-router.put('/:id/verify', authMiddleware, authorizeRoles('Admin', 'Superadmin', 'Dinas', 'Kepala Dinas'), contractController.verifyContract);
-router.put('/:id/terminate', authMiddleware, authorizeRoles('Admin', 'Superadmin', 'Dinas', 'Kepala Dinas'), contractController.terminateContract);
+router.get('/', authMiddleware, authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), contractController.getAllContracts);
+router.get('/:id', authMiddleware, authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), contractController.getContractById);
+router.put('/:id', authMiddleware, authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), contractController.updateContract);
+router.patch('/:id/approve-kadis', authMiddleware, authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), contractController.approveByKadis);
+router.patch('/:id/reject-kadis', authMiddleware, authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), contractController.rejectByKadis);
+router.put('/:id/verify', authMiddleware, authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), contractController.verifyContract);
+router.put('/:id/terminate', authMiddleware, authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), contractController.terminateContract);
 
 module.exports = router;

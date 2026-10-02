@@ -37,6 +37,7 @@ model aircraft_types {
   
   aircrafts        aircrafts[]
   master_tariffs   master_tariffs[] // Back-relation: satu tipe pesawat bisa punya 1 tarif
+  master_taxes     master_taxes[]
 }
 
 model airports {
@@ -53,6 +54,18 @@ model airports {
   assets          assets[]
   ticket_books    parking_ticket_books[]
   handovers       parking_warden_handovers[]
+}
+
+model mini_airports {
+  id              Int       @id @default(autoincrement())
+  kode_bandara    String    @unique @db.VarChar(50)
+  nama_bandara    String    @db.VarChar(150)
+  lokasi          String?   @db.VarChar(150)
+  deskripsi       String?   @db.Text
+  created_at      DateTime? @default(now()) @db.Timestamp(6)
+  updated_at      DateTime? @default(now()) @db.Timestamp(6)
+
+  users           users[]
 }
 
 model zones {
@@ -137,11 +150,13 @@ model users {
   id                Int       @id @default(autoincrement())
   username          String    @unique @db.VarChar(50)
   password_hash     String    @db.VarChar(255)
-  role              String    @db.VarChar(20)
+  role              String    @db.VarChar(50)
   airport_id        Int?
+  mini_airport_id   Int?
   created_at        DateTime? @default(now()) @db.Timestamp(6)
   
-  airports          airports? @relation(fields: [airport_id], references: [id], onDelete: SetNull)
+  airports          airports?       @relation(fields: [airport_id], references: [id], onDelete: SetNull)
+  mini_airports     mini_airports?  @relation(fields: [mini_airport_id], references: [id], onDelete: SetNull)
   tenants           tenants[]
   logged_operations operational_logs[]
   notifications     notifications[]
@@ -223,6 +238,25 @@ model master_tariffs {
   updated_at       DateTime? @default(now()) @db.Timestamp(6)
 
   assets           assets[]
+  aircraft_types   aircraft_types? @relation(fields: [aircraft_type_id], references: [id], onDelete: SetNull)
+}
+
+model master_taxes {
+  id               Int       @id @default(autoincrement())
+  kode_tax         String    @unique @db.VarChar(50)
+  nama_tax         String    @db.VarChar(150)
+  kategori         String    @db.VarChar(100) // 'Pendaratan', 'Penumpang', 'Parkir', 'Nginap', 'Airport'
+  aircraft_type_id Int?
+  satuan           String    @db.VarChar(50)
+  tarif            Decimal   @db.Decimal(15, 2)
+  tipe_tarif       String?   @default("Fixed") @db.VarChar(50) // 'Fixed' | 'Persentase'
+  persentase       Decimal?  @db.Decimal(5, 2)
+  dasar_hukum      String?   @db.VarChar(255)
+  deskripsi        String?   @db.Text
+  status           String?   @default("Active") @db.VarChar(50)
+  created_at       DateTime? @default(now()) @db.Timestamp(6)
+  updated_at       DateTime? @default(now()) @db.Timestamp(6)
+
   aircraft_types   aircraft_types? @relation(fields: [aircraft_type_id], references: [id], onDelete: SetNull)
 }
 

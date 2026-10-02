@@ -4,19 +4,19 @@ const overnightReportController = require('../controllers/overnightReportControl
 const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddleware');
 const upload = require('../middlewares/upload');
 
-// Get candidate roster for today's overnight checklist (Warden / Petugas)
+// Get candidate roster for today's overnight checklist (Petugas)
 router.get(
   '/draft-today',
   authMiddleware,
-  authorizeRoles('Warden', 'Petugas Lapangan', 'Petugas', 'Admin', 'Super Admin', 'Superadmin'),
+  authorizeRoles('petugas', 'admin', 'superadmin'),
   overnightReportController.getTodayDraftRoster
 );
 
-// Submit daily overnight report with mandatory photos (Warden / Petugas)
+// Submit daily overnight report with mandatory photos (Petugas)
 router.post(
   '/',
   authMiddleware,
-  authorizeRoles('Warden', 'Petugas Lapangan', 'Petugas', 'Admin', 'Super Admin', 'Superadmin'),
+  authorizeRoles('petugas', 'admin', 'superadmin'),
   upload.any(),
   overnightReportController.submitDailyOvernightReport
 );
@@ -25,7 +25,7 @@ router.post(
 router.get(
   '/',
   authMiddleware,
-  authorizeRoles('Warden', 'Petugas Lapangan', 'Petugas', 'Admin', 'Super Admin', 'Superadmin', 'Dinas', 'Kepala Dinas'),
+  authorizeRoles('petugas', 'admin', 'superadmin', 'dinas', 'kepala dinas'),
   overnightReportController.getAllOvernightReports
 );
 
@@ -33,7 +33,7 @@ router.get(
 router.get(
   '/:id',
   authMiddleware,
-  authorizeRoles('Warden', 'Petugas Lapangan', 'Petugas', 'Admin', 'Super Admin', 'Superadmin', 'Dinas', 'Kepala Dinas'),
+  authorizeRoles('petugas', 'admin', 'superadmin', 'dinas', 'kepala dinas'),
   overnightReportController.getOvernightReportById
 );
 

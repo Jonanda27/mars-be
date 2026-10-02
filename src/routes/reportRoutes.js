@@ -6,7 +6,7 @@ const { authMiddleware: protect, authorizeRoles: authorize } = require('../middl
 router.get(
   '/retribution',
   protect,
-  authorize('Admin', 'Super Admin', 'Dinas', 'Kepala Dinas', 'dinas', 'kepala dinas'),
+  authorize('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'),
   reportController.getRetributionReport
 );
 

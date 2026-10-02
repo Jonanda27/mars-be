@@ -9,6 +9,7 @@ const contractRoutes = require('./contractRoutes');
 const invoiceRoutes = require('./invoiceRoutes');
 const warningRoutes = require('./warningRoutes');
 const tariffRoutes = require('./tariffRoutes');
+const taxRoutes = require('./taxRoutes');
 const airportRoutes = require('./airportRoutes');
 const zoneRoutes = require('./zoneRoutes');
 const parkingRoutes = require('./parkingRoutes');
@@ -18,9 +19,12 @@ const overnightReportRoutes = require('./overnightReportRoutes');
 const flightScheduleRoutes = require('./flightScheduleRoutes');
 const reportRoutes = require('./reportRoutes');
 const dashboardRoutes = require('./dashboardRoutes');
+const userRoutes = require('./userRoutes');
+const miniAirportLogRoutes = require('./miniAirportLogRoutes');
 
 // Auth Routes
 router.use('/auth', authRoutes);
+router.use('/users', userRoutes);
 
 // Entity Routes
 router.use('/tenants', tenantRoutes);
@@ -31,10 +35,13 @@ router.use('/contracts', contractRoutes);
 router.use('/invoices', invoiceRoutes);
 router.use('/warnings', warningRoutes);
 router.use('/tariffs', tariffRoutes);
+router.use('/taxes', taxRoutes);
+router.use('/master-taxes', taxRoutes);
 router.use('/airports', airportRoutes);
 router.use('/zones', zoneRoutes);
 router.use('/parking', parkingRoutes);
 router.use('/logs', logRoutes);
+router.use('/mini-airport-logs', miniAirportLogRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/overnight-reports', overnightReportRoutes);
 router.use('/schedules', flightScheduleRoutes);

@@ -31,10 +31,18 @@ const verifyToken = (req, res, next) => {
   }
 };
 
+const normalizeRole = (r) => {
+  const lower = (r || '').toLowerCase().trim();
+  if (lower === 'petugas lapangan mini airport' || lower === 'petugas_mini_airport') return 'petugas_mini_airport';
+  if (lower === 'petugas lapangan' || lower === 'warden') return 'petugas';
+  if (lower === 'super admin') return 'superadmin';
+  return lower;
+};
+
 const authorizeRoles = (...roles) => {
   return (req, res, next) => {
-    const userRole = req.user?.role?.toLowerCase();
-    const hasRole = roles.some(r => r.toLowerCase() === userRole);
+    const userRole = normalizeRole(req.user?.role);
+    const hasRole = roles.some(r => normalizeRole(r) === userRole);
     if (!req.user || !hasRole) {
       const error = new Error(`Role Anda (${req.user?.role}) tidak memiliki izin untuk mengakses resource ini`);
       error.statusCode = 403;

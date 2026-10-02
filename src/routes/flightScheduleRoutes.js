@@ -28,13 +28,13 @@ const upload = multer({
 });
 
 // Tenant routes
-router.post('/', protect, authorize('Tenant', 'tenant'), upload.single('flight_plan_doc'), flightScheduleController.createSchedule);
-router.get('/tenant', protect, authorize('Tenant', 'tenant'), flightScheduleController.getTenantSchedules);
+router.post('/', protect, authorize('tenant'), upload.single('flight_plan_doc'), flightScheduleController.createSchedule);
+router.get('/tenant', protect, authorize('tenant'), flightScheduleController.getTenantSchedules);
 
 // Officer & Admin routes
-router.get('/', protect, authorize('Warden', 'Petugas Lapangan', 'petugas lapangan', 'Admin', 'Super Admin', 'superadmin', 'Dinas', 'dinas'), flightScheduleController.getAllSchedules);
-router.get('/expected-today', protect, authorize('Warden', 'Petugas Lapangan', 'petugas lapangan', 'Admin', 'Super Admin', 'superadmin'), flightScheduleController.getTodayExpectedArrivals);
-router.put('/:id/verify', protect, authorize('Warden', 'Petugas Lapangan', 'petugas lapangan'), flightScheduleController.verifySchedule);
-router.post('/:id/check-in', protect, authorize('Warden', 'Petugas Lapangan', 'petugas lapangan'), flightScheduleController.checkInFromSchedule);
+router.get('/', protect, authorize('petugas', 'admin', 'superadmin', 'dinas'), flightScheduleController.getAllSchedules);
+router.get('/expected-today', protect, authorize('petugas', 'admin', 'superadmin'), flightScheduleController.getTodayExpectedArrivals);
+router.put('/:id/verify', protect, authorize('petugas'), flightScheduleController.verifySchedule);
+router.post('/:id/check-in', protect, authorize('petugas'), flightScheduleController.checkInFromSchedule);
 
 module.exports = router;

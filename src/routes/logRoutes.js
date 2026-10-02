@@ -7,6 +7,9 @@ const upload = require('../middlewares/upload');
 // Create entry (requires field log_evidence for the photo)
 router.post('/entry', authMiddleware, upload.single('log_evidence'), logController.createLogEntry);
 
+// Emergency checkin with PKS Pendaratan Darurat
+router.post('/emergency-checkin', authMiddleware, upload.single('log_evidence'), logController.emergencyCheckin);
+
 // Update exit
 router.put('/exit/:id', authMiddleware, logController.updateLogExit);
 

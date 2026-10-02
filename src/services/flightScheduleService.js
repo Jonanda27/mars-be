@@ -37,7 +37,7 @@ exports.createSchedule = async (tenantId, payload, fileUrl) => {
     include: {
       assets: true,
       rental_applications: {
-        where: { application_type: 'Sewa Hanggar' },
+        where: { application_type: { in: ['Sewa Hanggar', 'Sewa Apron'] } },
         orderBy: { id: 'desc' }
       }
     },
@@ -79,24 +79,96 @@ exports.createSchedule = async (tenantId, payload, fileUrl) => {
   const regNumber = selectedAircraft ? selectedAircraft.registration_number : payload.registration_number.toUpperCase().trim();
   const aircraftType = selectedAircraft?.aircraft_types?.jenis_pesawat || payload.aircraft_type || 'Standar';
 
+  // 2b. Validasi Ketersediaan Armada:
+  // Armada yang sudah membuat pengajuan (Menunggu Verifikasi), sudah diverifikasi (Disetujui),
+  // atau sudah di-check in (sedang berada di hanggar/apron) TIDAK BISA mengajukan jadwal baru
+  // sampai armada tersebut telah di-checkout.
+
+  // 1) Cek apakah armada sedang aktif terparkir (checked-in di operational_logs dan belum checkout)
+  const activeLog = await prisma.operational_logs.findFirst({
+    where: {
+      registration_number: regNumber,
+      exit_time: null
+    }
+  });
+
+  if (activeLog) {
+    throw new Error(
+      `Armada ${regNumber} saat ini masih aktif berada di dalam ${activeLog.parking_location || 'Hanggar'} (sudah Check-In) dan belum melakukan Check-Out. Pengajuan jadwal baru hanya dapat dilakukan setelah armada melakukan Check-Out.`
+    );
+  }
+
+  // 2) Cek apakah armada sedang memiliki pengajuan jadwal yang aktif (Menunggu Verifikasi, Disetujui, atau Checked-In)
+  const activeSchedule = await prisma.flight_schedules.findFirst({
+    where: {
+      registration_number: regNumber,
+      status: {
+        in: ['Menunggu Verifikasi Petugas', 'Disetujui', 'Checked-In']
+      }
+    },
+    orderBy: { created_at: 'desc' }
+  });
+
+  if (activeSchedule) {
+    let reasonText = '';
+    if (activeSchedule.status === 'Menunggu Verifikasi Petugas') {
+      reasonText = `masih memiliki pengajuan jadwal yang sedang menunggu verifikasi petugas (No. Jadwal: ${activeSchedule.schedule_number})`;
+    } else if (activeSchedule.status === 'Disetujui') {
+      reasonText = `sudah memiliki jadwal yang telah diverifikasi/disetujui dan sedang menunggu kedatangan armada di lokasi (No. Jadwal: ${activeSchedule.schedule_number})`;
+    } else {
+      reasonText = `sedang dalam status ${activeSchedule.status} (No. Jadwal: ${activeSchedule.schedule_number})`;
+    }
+
+    throw new Error(
+      `Armada ${regNumber} ${reasonText}. Anda tidak dapat mengajukan jadwal baru untuk armada ini sampai jadwal tersebut selesai dan armada telah di-checkout.`
+    );
+  }
+
   // 3. Periode Layanan Sewa Hanggar (Murni dari Tanggal yang Dipilih saat Step Pilih Layanan Permohonan Sewa, BUKAN Masa Kontrak Payung 1 Tahun)
   const arrivalDate = new Date(payload.estimated_arrival);
   if (isNaN(arrivalDate.getTime())) {
     throw new Error('Format tanggal dan jam estimasi kedatangan tidak valid');
   }
 
-  // Cari rental_application Sewa Hanggar aktif untuk tenant ini
-  let hanggarApp = activePayung.rental_applications?.[0];
-  if (!hanggarApp || !hanggarApp.start_date || !hanggarApp.end_date) {
+  // Cari rental_application Sewa Hanggar/Apron aktif untuk tenant ini (bukan Mini Airport)
+  let hanggarApp = null;
+  if (payload.rental_application_id) {
     hanggarApp = await prisma.rental_applications.findFirst({
+      where: { 
+        id: Number.parseInt(payload.rental_application_id, 10),
+        application_type: { in: ['Sewa Hanggar', 'Sewa Apron'] }
+      },
+      include: { assets: true }
+    });
+    if (!hanggarApp) {
+      throw new Error('Permohonan yang dipilih bukan permohonan Sewa Hanggar/Apron Bandara Mozes Kilangin');
+    }
+  }
+
+  if (!hanggarApp) {
+    const allTenantHanggarApps = await prisma.rental_applications.findMany({
       where: {
         tenant_id: parsedTenantId,
-        application_type: 'Sewa Hanggar',
+        application_type: { in: ['Sewa Hanggar', 'Sewa Apron'] },
+        status: { in: ['Aktif', 'Active', 'Disetujui', 'Approved', 'Signed', 'Draft Kontrak', 'Surat Disetujui'] },
         start_date: { not: null },
         end_date: { not: null }
       },
+      include: { assets: true },
       orderBy: { id: 'desc' }
     });
+
+    if (selectedAircraft) {
+      hanggarApp = allTenantHanggarApps.find(a => {
+        const spec = typeof a.specific_needs === 'string' ? JSON.parse(a.specific_needs) : (a.specific_needs || {});
+        const ids = spec.aircraft_ids || [];
+        return ids.map(String).includes(String(selectedAircraft.id));
+      });
+    }
+
+    if (!hanggarApp && allTenantHanggarApps.length > 0) {
+      hanggarApp = allTenantHanggarApps[0];
+    }
   }
 
   if (!hanggarApp || !hanggarApp.start_date || !hanggarApp.end_date) {
@@ -144,7 +216,7 @@ exports.createSchedule = async (tenantId, payload, fileUrl) => {
       aircraft_id: selectedAircraft ? selectedAircraft.id : null,
       registration_number: regNumber,
       aircraft_type: aircraftType,
-      parking_location: payload.parking_location || 'Hanggar',
+      parking_location: payload.parking_location || (hanggarApp?.assets?.jenis_aset || 'Hanggar'),
       purpose: payload.purpose || 'Inap Reguler / RON',
       estimated_arrival: arrivalDate,
       estimated_departure: departureDate,
@@ -178,7 +250,7 @@ exports.getTenantSchedules = async (tenantId) => {
   });
 };
 
-// 3. Ambil Seluruh Jadwal (Untuk Petugas Lapangan & Admin)
+// 3. Ambil Seluruh Jadwal (Khusus Petugas Lapangan Mozes Kilangin & Admin)
 exports.getAllSchedules = async (filters = {}) => {
   const where = {};
   if (filters.status) {
@@ -189,6 +261,10 @@ exports.getAllSchedules = async (filters = {}) => {
   }
   if (filters.parking_location) {
     where.parking_location = filters.parking_location;
+  } else {
+    // Pastikan HANYA jadwal pemakaian fasilitas Bandara Mozes Kilangin (Hanggar & Apron)
+    // dan tidak memuat jadwal/pendaratan Mini Airport
+    where.parking_location = { in: ['Hanggar', 'Apron', 'Hanggar Mozes Kilangin', 'Apron Mozes Kilangin'] };
   }
 
   return await prisma.flight_schedules.findMany({
@@ -254,7 +330,8 @@ exports.getTodayExpectedArrivals = async () => {
 
   return await prisma.flight_schedules.findMany({
     where: {
-      status: 'Disetujui'
+      status: 'Disetujui',
+      parking_location: { in: ['Hanggar', 'Apron', 'Hanggar Mozes Kilangin', 'Apron Mozes Kilangin'] }
     },
     include: {
       tenant: {

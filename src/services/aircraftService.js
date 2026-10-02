@@ -12,8 +12,10 @@ exports.fetchAircraftTypes = async () => {
   });
 };
 
-exports.fetchAircraftsByTenant = async (tenantId) => {
-  return await prisma.aircrafts.findMany({
+exports.fetchAircraftsByTenant = async (tenantId, options = {}) => {
+  const { onlyAvailable = false } = options;
+
+  const aircrafts = await prisma.aircrafts.findMany({
     where: { tenant_id: tenantId },
     include: {
       assets: true,
@@ -23,6 +25,152 @@ exports.fetchAircraftsByTenant = async (tenantId) => {
     },
     orderBy: { created_at: 'desc' }
   });
+
+  // Ambil permohonan sewa aktif milik tenant (selain yang ditolak/batal/selesai/expired)
+  const activeApplications = await prisma.rental_applications.findMany({
+    where: {
+      tenant_id: tenantId,
+      status: {
+        notIn: ['Ditolak', 'Rejected', 'Batal', 'Cancelled', 'Selesai', 'Expired']
+      }
+    },
+    select: {
+      id: true,
+      application_number: true,
+      status: true,
+      asset_id: true,
+      specific_needs: true
+    }
+  });
+
+  // Peta ID dan Registrasi armada yang terikat pada permohonan sewa / mini airport aktif
+  const tiedAircraftMap = new Map();
+  const tiedRegMap = new Map();
+
+  for (const app of activeApplications) {
+    let spec = app.specific_needs;
+    if (typeof spec === 'string') {
+      try { spec = JSON.parse(spec); } catch (e) {}
+    }
+    if (spec) {
+      // 1. Dukungan Mini Airport (Single aircraft_id & registration_number)
+      if (spec.aircraft_id) {
+        const parsedId = Number.parseInt(spec.aircraft_id, 10);
+        if (!Number.isNaN(parsedId)) {
+          tiedAircraftMap.set(parsedId, {
+            appId: app.id,
+            application_number: app.application_number,
+            status: app.status
+          });
+        }
+      }
+      if (spec.registration_number) {
+        tiedRegMap.set(spec.registration_number.trim().toUpperCase(), {
+          appId: app.id,
+          application_number: app.application_number,
+          status: app.status
+        });
+      }
+
+      // 2. Dukungan Sewa Hanggar Mozes Kilangin (Array aircraft_ids)
+      if (Array.isArray(spec.aircraft_ids)) {
+        for (const aid of spec.aircraft_ids) {
+          const parsedId = Number.parseInt(aid, 10);
+          if (!Number.isNaN(parsedId)) {
+            tiedAircraftMap.set(parsedId, {
+              appId: app.id,
+              application_number: app.application_number,
+              status: app.status
+            });
+          }
+        }
+      }
+      if (Array.isArray(spec.aircraft_details)) {
+        for (const detail of spec.aircraft_details) {
+          const aid = detail.aircraft_id || detail.id;
+          const parsedId = Number.parseInt(aid, 10);
+          if (!Number.isNaN(parsedId)) {
+            tiedAircraftMap.set(parsedId, {
+              appId: app.id,
+              application_number: app.application_number,
+              status: app.status
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // Cek juga operational_logs aktif yang belum checkout (pesawat fisik masih di apron)
+  const activeLogs = await prisma.operational_logs.findMany({
+    where: {
+      tenant_id: tenantId,
+      exit_time: null
+    },
+    select: {
+      id: true,
+      registration_number: true,
+      application_id: true,
+      parking_location: true
+    }
+  });
+
+  for (const log of activeLogs) {
+    if (log.registration_number) {
+      tiedRegMap.set(log.registration_number.trim().toUpperCase(), {
+        appId: log.application_id,
+        application_number: `LOG #${log.id}`,
+        status: `Sedang di Stand (${log.parking_location || 'Apron'})`
+      });
+    }
+  }
+
+  // Jadwal penerbangan aktif
+  const activeSchedules = await prisma.flight_schedules.findMany({
+    where: {
+      tenant_id: tenantId,
+      status: {
+        in: ['Checked-In', 'Disetujui', 'Menunggu Verifikasi']
+      }
+    },
+    select: {
+      id: true,
+      schedule_number: true,
+      aircraft_id: true,
+      registration_number: true,
+      status: true
+    }
+  });
+
+  const scheduledAircraftSet = new Set(
+    activeSchedules
+      .filter(s => s.aircraft_id)
+      .map(s => s.aircraft_id)
+  );
+
+  const enrichedAircrafts = aircrafts.map(ac => {
+    const regUpper = (ac.registration_number || '').trim().toUpperCase();
+    const tiedToApp = tiedAircraftMap.get(ac.id) || tiedRegMap.get(regUpper) || null;
+    const hasActiveAsset = Boolean(ac.asset_id);
+    const hasActiveSchedule = scheduledAircraftSet.has(ac.id);
+    const isStatusInUse = ['in use', 'in-use', 'sedang digunakan', 'tersewa', 'maintenance', 'perawatan'].includes((ac.status || '').toLowerCase());
+
+    const isUsed = Boolean(tiedToApp || hasActiveAsset || hasActiveSchedule || isStatusInUse);
+
+    return {
+      ...ac,
+      is_tied_to_rental: Boolean(tiedToApp || hasActiveAsset),
+      rental_application: tiedToApp,
+      is_in_use: isUsed,
+      is_available: !isUsed
+    };
+  });
+
+  if (onlyAvailable) {
+    return enrichedAircrafts.filter(ac => ac.is_available);
+  }
+
+  return enrichedAircrafts;
 };
 
 exports.fetchAircraftById = async (id) => {

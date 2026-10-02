@@ -60,10 +60,17 @@ const deleteAirport = async (id) => {
   });
 };
 
+const getAllMiniAirports = async () => {
+  return await prisma.mini_airports.findMany({
+    orderBy: { kode_bandara: 'asc' }
+  });
+};
+
 module.exports = {
   getAllAirports,
   getAirportById,
   createAirport,
   updateAirport,
-  deleteAirport
+  deleteAirport,
+  getAllMiniAirports
 };

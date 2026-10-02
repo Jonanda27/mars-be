@@ -1,8 +1,20 @@
 const prisma = require('../config/db');
 const invoiceService = require('./invoiceService');
 
-exports.getAllContracts = async () => {
-  return await prisma.contracts.findMany({
+exports.getAllContracts = async (user = null) => {
+  const where = {};
+  const role = typeof user === 'string' ? user : user?.role;
+  const normalizedRole = (role || '').toLowerCase();
+  const miniAirportId = typeof user === 'object' ? user?.mini_airport_id : null;
+
+  if (normalizedRole === 'admin_mini_airport') {
+    where.contract_type = { in: ['PKS Payung Mini Airport', 'Payung'] };
+  } else if (normalizedRole === 'admin') {
+    where.contract_type = { notIn: ['PKS Payung Mini Airport'] };
+  }
+
+  const contracts = await prisma.contracts.findMany({
+    where,
     include: {
       tenants: true,
       assets: true,
@@ -10,6 +22,38 @@ exports.getAllContracts = async () => {
     },
     orderBy: { created_at: 'desc' }
   });
+
+  if (normalizedRole === 'admin_mini_airport') {
+    const targetMiniId = miniAirportId ? Number(miniAirportId) : null;
+    return contracts.filter(c => {
+      let f = c.fasilitas;
+      if (typeof f === 'string') {
+        try { f = JSON.parse(f); } catch (e) { f = {}; }
+      }
+      f = f || {};
+      const isMiniContract = c.contract_type === 'PKS Payung Mini Airport' || Boolean(f.mini_airport_id || f.airport_code);
+      if (!isMiniContract) return false;
+      if (targetMiniId) {
+        return Number(f.mini_airport_id) === targetMiniId;
+      }
+      return true;
+    });
+  }
+
+  if (normalizedRole === 'admin') {
+    // Mozes Kilangin: Sembunyikan kontrak payung mini airport apapun
+    return contracts.filter(c => {
+      let f = c.fasilitas;
+      if (typeof f === 'string') {
+        try { f = JSON.parse(f); } catch (e) { f = {}; }
+      }
+      f = f || {};
+      const isMini = c.contract_type === 'PKS Payung Mini Airport' || Boolean(f.mini_airport_id);
+      return !isMini;
+    });
+  }
+
+  return contracts;
 };
 
 exports.getContractById = async (id) => {
@@ -235,9 +279,12 @@ exports.approveContractByKadis = async (id, kadisName = 'Kepala Dinas') => {
 
     // 2. Also update the linked rental_application status
     // For Payung contract: status permohonan menjadi 'Surat Disetujui' (sehingga tenant bisa lanjut memilih detail aset / armada)
-    // For regular/room contract: status permohonan menjadi 'Signed'
-    const isPayung = contract.contract_type === 'Payung';
-    const appTargetStatus = isPayung ? 'Surat Disetujui' : 'Signed';
+    // For regular/room contract: status permohonan menjadi 'Aktif'
+    const isPayung = contract.contract_type === 'Payung' || 
+                     contract.contract_type === 'PKS Payung Mini Airport' || 
+                     contract.contract_type === 'PKS Payung Mozes Kilangin' ||
+                     (contract.contract_type || '').toLowerCase().includes('payung');
+    const appTargetStatus = isPayung ? 'Surat Disetujui' : 'Aktif';
 
     await tx.rental_applications.updateMany({
       where: { contract_id: contractId },
@@ -263,10 +310,15 @@ exports.approveContractByKadis = async (id, kadisName = 'Kepala Dinas') => {
     return updated;
   });
 
-  // Untuk sewa ruangan: terbitkan penetapan SKRD di awal secara otomatis saat kontrak aktif
-  const isRuangan = Boolean(
+  // Untuk sewa ruangan reguler (bukan payung/mini airport): terbitkan penetapan SKRD di awal secara otomatis saat kontrak aktif
+  const isPayungContract = contract.contract_type === 'Payung' || 
+                           contract.contract_type === 'PKS Payung Mini Airport' || 
+                           contract.contract_type === 'PKS Payung Mozes Kilangin' ||
+                           (contract.contract_type || '').toLowerCase().includes('payung');
+  const isRuangan = !isPayungContract && Boolean(
     (contract.assets?.jenis_aset || '').toLowerCase().includes('ruang') ||
-    contract.contract_type !== 'Payung'
+    contract.contract_type === 'Sewa Ruangan' ||
+    contract.asset_id
   );
   if (isRuangan) {
     try {
@@ -310,4 +362,152 @@ exports.rejectContractByKadis = async (id, reason = 'Dokumen PKS belum lengkap a
 exports.verifyContract = async (id) => {
   return await exports.approveContractByKadis(id, 'Admin / Dinas');
 };
+
+exports.createEmergencyContract = async (data, officerUser) => {
+  const {
+    airline_name,
+    registration_number,
+    aircraft_type_id,
+    pic_name,
+    pic_phone,
+    pic_email,
+    emergency_reason,
+    estimated_location,
+    tenant_signature,
+    admin_signature
+  } = data;
+
+  const cleanAirlineName = (airline_name || '').trim();
+  if (!cleanAirlineName) throw new Error('Nama Maskapai / Operator wajib diisi');
+  if (!pic_name?.trim()) throw new Error('Nama PIC / Perwakilan Maskapai wajib diisi');
+  if (!tenant_signature) throw new Error('Tanda tangan perwakilan maskapai wajib dibubuhkan');
+
+  const regNo = (registration_number || '').trim().toUpperCase();
+
+  // 1. Find or create Tenant (Insidentil / Darurat)
+  let tenant = await prisma.tenants.findFirst({
+    where: {
+      nama_perusahaan: { equals: cleanAirlineName, mode: 'insensitive' }
+    }
+  });
+
+  if (!tenant) {
+    const tenantCount = await prisma.tenants.count();
+    const tenantIdStr = `TNT-EMG-${String(tenantCount + 1).padStart(3, '0')}`;
+    tenant = await prisma.tenants.create({
+      data: {
+        tenant_id_str: tenantIdStr,
+        nama_perusahaan: cleanAirlineName,
+        pic: pic_name.trim(),
+        nomor_telepon: pic_phone?.trim() || '-',
+        email: pic_email?.trim() || (regNo ? `${regNo.toLowerCase()}@emergency.bandara-timika.id` : `darurat-${Date.now()}@bandara-timika.id`),
+        jenis_tenant: 'Insidentil / Darurat',
+        status_verifikasi: 'Verified',
+        status_pembayaran: 'Current'
+      }
+    });
+  }
+
+  // 2. Resolve Asset ID and Location (Default Apron jika belum ditentukan)
+  const isHanggar = estimated_location && estimated_location.toLowerCase() === 'hanggar';
+  const asset = await prisma.assets.findFirst({
+    where: { jenis_aset: isHanggar ? 'Hanggar' : 'Apron' }
+  });
+  const assetId = asset ? asset.id : (isHanggar ? 1 : 2);
+
+  // 3. Upsert Aircraft (jika nomor registrasi sudah diketahui, jika belum akan dicatat oleh petugas lapangan)
+  const parsedTypeId = aircraft_type_id ? parseInt(aircraft_type_id, 10) : null;
+  let aircraft = null;
+
+  if (regNo) {
+    aircraft = await prisma.aircrafts.findUnique({
+      where: { registration_number: regNo }
+    });
+
+    if (!aircraft) {
+      aircraft = await prisma.aircrafts.create({
+        data: {
+          registration_number: regNo,
+          aircraft_type_id: parsedTypeId,
+          operator: cleanAirlineName,
+          tenant_id: tenant.id,
+          asset_id: assetId,
+          status: 'In Use'
+        }
+      });
+    } else {
+      aircraft = await prisma.aircrafts.update({
+        where: { id: aircraft.id },
+        data: {
+          ...(parsedTypeId && { aircraft_type_id: parsedTypeId }),
+          tenant_id: tenant.id,
+          asset_id: assetId,
+          status: 'In Use'
+        }
+      });
+    }
+  }
+
+  // 4. Create Contract: PKS Pendaratan Darurat
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const contractCount = await prisma.contracts.count();
+  const contractNumber = `PKS-EMG/${year}/${month}/${String(contractCount + 1).padStart(3, '0')}`;
+
+  const defaultAdminSig = admin_signature || `Dinas Perhubungan Kab. Mimika (${officerUser?.nama_lengkap || officerUser?.username || 'Kepala UPBU'})`;
+
+  const contract = await prisma.contracts.create({
+    data: {
+      contract_number: contractNumber,
+      contract_type: 'PKS Pendaratan Darurat',
+      tenant_id: tenant.id,
+      asset_id: assetId,
+      status: 'Aktif',
+      start_date: today,
+      jenis_pemanfaatan: `Pendaratan Darurat / Ad-Hoc di Bandara Mozes Kilangin`,
+      tenant_signature: tenant_signature,
+      admin_signature: defaultAdminSig,
+      ketentuan_pembayaran: 'Pembayaran retribusi pasca-checkout setelah e-SKRD diterbitkan oleh Dinas Perhubungan Kab. Mimika',
+      fasilitas: {
+        emergency_reason: emergency_reason || 'Pendaratan Darurat Teknis/Operasional',
+        pic_name: pic_name.trim(),
+        pic_phone: pic_phone?.trim() || '-',
+        pic_email: pic_email?.trim() || tenant.email,
+        registration_number: regNo || null,
+        aircraft_type_id: parsedTypeId,
+        airline_name: cleanAirlineName,
+        parking_location: estimated_location || 'Menunggu Penempatan Petugas Lapangan'
+      }
+    },
+    include: {
+      assets: true,
+      tenants: true
+    }
+  });
+
+  return {
+    contract,
+    tenant,
+    aircraft
+  };
+};
+
+exports.getEmergencyActiveContracts = async () => {
+  return await prisma.contracts.findMany({
+    where: {
+      contract_type: 'PKS Pendaratan Darurat',
+      status: { in: ['Aktif', 'Active'] }
+    },
+    include: {
+      tenants: true,
+      assets: true,
+      operational_logs: {
+        orderBy: { entry_time: 'desc' }
+      }
+    },
+    orderBy: { created_at: 'desc' }
+  });
+};
+
 

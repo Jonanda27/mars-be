@@ -1,4 +1,5 @@
 const prisma = require('../config/db');
+const emailService = require('../services/emailService');
 
 const getAllWarnings = async (req, res, next) => {
   try {
@@ -47,7 +48,62 @@ const getTenantWarnings = async (req, res, next) => {
   }
 };
 
+const sendWarningEmail = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const warning = await prisma.warnings.findUnique({
+      where: { id: Number(id) },
+      include: {
+        tenants: {
+          include: { users: true }
+        },
+        invoices: true
+      }
+    });
+
+    if (!warning) {
+      return res.status(404).json({ success: false, message: 'Surat Peringatan tidak ditemukan' });
+    }
+
+    const recipientEmail = req.body?.recipient_email || warning.tenants?.email || warning.tenants?.users?.username;
+    if (!recipientEmail || !recipientEmail.includes('@')) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `Tenant ${warning.tenants?.nama_perusahaan || ''} belum memiliki alamat email yang valid di sistem.` 
+      });
+    }
+
+    const emailResult = await emailService.sendWarningLetterEmail({
+      to: recipientEmail,
+      tenant: warning.tenants,
+      warning,
+      invoice: warning.invoices
+    });
+
+    if (!emailResult.success) {
+      return res.status(500).json({ 
+        success: false, 
+        message: `Gagal mengirim email: ${emailResult.error}` 
+      });
+    }
+
+    const updated = await prisma.warnings.update({
+      where: { id: warning.id },
+      data: { status: 'Email Sent' }
+    });
+
+    res.json({
+      success: true,
+      message: `Surat Peringatan ${warning.warning_number} berhasil dikirim ke email ${recipientEmail}`,
+      data: updated
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getAllWarnings,
-  getTenantWarnings
+  getTenantWarnings,
+  sendWarningEmail
 };

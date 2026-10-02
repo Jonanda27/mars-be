@@ -52,7 +52,8 @@ exports.deleteAsset = async (req, res, next) => {
 
 exports.getAssetCapacity = async (req, res, next) => {
   try {
-    const capacity = await assetService.getHangarCapacity(req.params.id);
+    const { exclude_application_id } = req.query;
+    const capacity = await assetService.getHangarCapacity(req.params.id, exclude_application_id);
     res.status(200).json({ success: true, data: capacity });
   } catch (error) {
     next(error);

@@ -1,7 +1,9 @@
 const prisma = require('../config/db');
+const crypto = require('crypto');
+const emailService = require('./emailService');
 
-exports.getAllInvoices = async () => {
-  return await prisma.invoices.findMany({
+exports.getAllInvoices = async (user = null) => {
+  const allInvoices = await prisma.invoices.findMany({
     include: {
       contracts: {
         include: {
@@ -18,6 +20,25 @@ exports.getAllInvoices = async () => {
       created_at: 'desc'
     }
   });
+
+  const userRole = (user?.role || '').toLowerCase();
+  if (userRole === 'admin_mini_airport' || user?.mini_airport_id) {
+    const targetMiniId = Number(user.mini_airport_id);
+    return allInvoices.filter(inv => {
+      const isMini = inv.invoice_type === 'Mini Airport';
+      if (!isMini) return false;
+      const det = (inv.details && typeof inv.details === 'object') ? inv.details : {};
+      const f = (inv.contracts?.fasilitas && typeof inv.contracts.fasilitas === 'object') ? inv.contracts.fasilitas : {};
+      const mId = det.airport_id || det.mini_airport_id || f.mini_airport_id;
+      return targetMiniId ? Number(mId) === targetMiniId : true;
+    });
+  }
+
+  if (userRole === 'admin') {
+    return allInvoices.filter(inv => inv.invoice_type !== 'Mini Airport');
+  }
+
+  return allInvoices;
 };
 
 exports.getTenantInvoices = async (tenantId) => {
@@ -276,7 +297,7 @@ exports.verifyPayment = async (id) => {
   const updatedContract = await prisma.contracts.update({
     where: { id: invoice.contract_id },
     data: {
-      status: 'Active'
+      status: 'Aktif'
     },
     include: {
       rental_applications: true
@@ -378,15 +399,16 @@ const calculateHanggarLogDetails = async (log) => {
 
   const verifiedNights = overnightItems.length;
 
-  // Jika belum ada rekaman tutup hari spesifik, gunakan selisih hari tanggal keluar vs masuk
-  let calculatedNights = verifiedNights;
-  if (calculatedNights === 0) {
-    const entryDate = new Date(log.entry_time);
-    const exitDate = log.exit_time ? new Date(log.exit_time) : new Date();
-    const diffTime = Math.abs(exitDate.getTime() - entryDate.getTime());
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    calculatedNights = log.is_overnight ? Math.max(1, diffDays) : 1;
-  }
+  // Hitung durasi inap real berdasarkan selisih tanggal kalender (masuk vs keluar / saat ini)
+  const entryDate = new Date(log.entry_time);
+  const exitDate = log.exit_time ? new Date(log.exit_time) : new Date();
+
+  const entryMidnight = new Date(entryDate.getFullYear(), entryDate.getMonth(), entryDate.getDate()).getTime();
+  const exitMidnight = new Date(exitDate.getFullYear(), exitDate.getMonth(), exitDate.getDate()).getTime();
+  const calendarDays = Math.max(0, Math.round((exitMidnight - entryMidnight) / (1000 * 60 * 60 * 24)));
+
+  // Durasi malam inap aktual (minimal 1 malam):
+  const calculatedNights = Math.max(1, verifiedNights, calendarDays);
 
   // 2. Cari Master Tarif berdasarkan Nomor Registrasi & Tipe Armada
   const aircraft = await prisma.aircrafts.findUnique({
@@ -439,7 +461,11 @@ const calculateHanggarLogDetails = async (log) => {
     subtotal: subtotal,
     evidence_photos: overnightItems.map(i => i.evidence_photo).filter(Boolean),
     tenant_id: log.tenant_id,
-    tenant_name: log.tenants?.nama_perusahaan || 'Maskapai / Operator Tamu'
+    tenant_name: log.tenants?.nama_perusahaan || 'Maskapai / Operator Tamu',
+    contract_type: log.contracts?.contract_type || 'Payung',
+    contract_number: log.contracts?.contract_number || null,
+    contract_fasilitas: log.contracts?.fasilitas || null,
+    is_emergency: log.contracts?.contract_type === 'PKS Pendaratan Darurat'
   };
 };
 
@@ -507,7 +533,11 @@ exports.generateHanggarCheckoutInvoice = async (logId, customRate) => {
   const month = String(today.getMonth() + 1).padStart(2, '0');
   const count = await prisma.invoices.count();
   const seq = String(count + 1).padStart(3, '0');
-  const invoiceNumber = `SKRD-HGR/${year}/${month}/${seq}`;
+  const isEmergency = log.contracts?.contract_type === 'PKS Pendaratan Darurat';
+  const emergencyPaymentToken = isEmergency ? crypto.randomBytes(24).toString('hex') : null;
+  const invoicePrefix = isEmergency ? 'SKRD-EMG' : 'SKRD-HGR';
+  const invoiceType = isEmergency ? 'Pendaratan Darurat' : (log.parking_location === 'Apron' ? 'Sewa Apron' : 'Sewa Hanggar');
+  const invoiceNumber = `${invoicePrefix}/${year}/${month}/${seq}`;
 
   // Jatuh tempo standar 30 hari kalender
   const dueDate = new Date();
@@ -517,7 +547,8 @@ exports.generateHanggarCheckoutInvoice = async (logId, customRate) => {
     ...calc,
     rate_per_night: effectiveRate,
     subtotal: totalAmount,
-    exit_time: log.exit_time || new Date()
+    exit_time: log.exit_time || new Date(),
+    ...(emergencyPaymentToken && { emergency_payment_token: emergencyPaymentToken })
   };
 
   // Hubungkan ke kontrak payung tenant jika ada
@@ -540,7 +571,7 @@ exports.generateHanggarCheckoutInvoice = async (logId, customRate) => {
         invoice_number: invoiceNumber,
         contract_id: contractId,
         tenant_id: log.tenant_id,
-        invoice_type: 'Sewa Hanggar',
+        invoice_type: invoiceType,
         amount: totalAmount,
         due_date: dueDate,
         status: 'Unpaid',
@@ -565,6 +596,29 @@ exports.generateHanggarCheckoutInvoice = async (logId, customRate) => {
     where: { id: log.id },
     data: { invoice_id: newInvoice.id }
   });
+
+  // Kirim email tagihan SKRD khusus untuk pendaratan darurat
+  if (isEmergency && emergencyPaymentToken) {
+    const fasilitas = typeof log.contracts?.fasilitas === 'string'
+      ? JSON.parse(log.contracts.fasilitas)
+      : (log.contracts?.fasilitas || {});
+    const targetEmail = fasilitas?.pic_email || log.tenants?.email;
+    if (targetEmail && !targetEmail.includes('@emergency.bandara-timika.id')) {
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const paymentLink = `${frontendUrl}/pembayaran-darurat/${emergencyPaymentToken}`;
+      try {
+        await emailService.sendEmergencyInvoiceEmail({
+          to: targetEmail,
+          invoice: newInvoice,
+          log,
+          contract: log.contracts,
+          paymentLink
+        });
+      } catch (mailErr) {
+        console.error('Gagal mengirim email SKRD darurat:', mailErr);
+      }
+    }
+  }
 
   return newInvoice;
 };
@@ -670,7 +724,7 @@ exports.generateHanggarPeriodicInvoice = async (payload) => {
 /**
  * Penerbitan SKRD Denda (Slide 5, 6, 9 PPT)
  * Diterbitkan oleh Dinas ketika SKRD pokok belum dibayar melewati jatuh tempo (>30 hari).
- * Besaran denda: 2% per bulan dari nilai pokok yang tertunggak.
+ * Besaran denda: 1% per bulan dari nilai pokok yang tertunggak.
  * Kode Rekening: 4.1.4.01.01 (Pendapatan Denda Retribusi Daerah)
  */
 exports.generatePenaltyInvoice = async (principalInvoiceId, dinasUserId, payload = {}) => {
@@ -709,10 +763,10 @@ exports.generatePenaltyInvoice = async (principalInvoiceId, dinasUserId, payload
 
   // Hitung jumlah bulan keterlambatan (pembulatan ke atas per bulan kalender sesuai PP/Perda Retribusi Daerah)
   const monthsOverdue = Math.max(1, Math.ceil(overdueDays / 30));
-  const ratePct = 2; // 2% per bulan
+  const ratePct = payload.rate_percent_per_month ? Number(payload.rate_percent_per_month) : 1; // 1% per bulan
   const principalAmount = Number(principalInvoice.amount);
   
-  // Custom penalty amount or auto 2% per month
+  // Custom penalty amount or auto 1% per month
   const calculatedPenalty = Math.round(principalAmount * (ratePct / 100) * monthsOverdue);
   const penaltyAmount = payload.custom_amount ? Number(payload.custom_amount) : calculatedPenalty;
 
@@ -895,3 +949,207 @@ exports.reissueCorrectedInvoice = async (invoiceId, dinasUserId, payload = {}) =
 
   return newInvoice;
 };
+
+
+exports.getEmergencyInvoiceByToken = async (token) => {
+  if (!token) throw new Error('Token pembayaran tidak valid');
+
+  const invoices = await prisma.invoices.findMany({
+    where: {
+      invoice_type: 'Pendaratan Darurat'
+    },
+    include: {
+      contracts: {
+        include: {
+          assets: true,
+          tenants: true
+        }
+      },
+      tenants: true,
+      operational_logs: true
+    }
+  });
+
+  const invoice = invoices.find(inv => {
+    const details = typeof inv.details === 'string' ? JSON.parse(inv.details) : (inv.details || []);
+    const detailItem = Array.isArray(details) ? details[0] : details;
+    return detailItem?.emergency_payment_token === token;
+  });
+
+  if (!invoice) {
+    throw new Error('Tagihan SKRD Pendaratan Darurat dengan tautan ini tidak ditemukan');
+  }
+
+  const details = typeof invoice.details === 'string' ? JSON.parse(invoice.details) : (invoice.details || []);
+  const detailItem = Array.isArray(details) ? details[0] : details;
+
+  return {
+    ...invoice,
+    parsed_details: detailItem,
+    bank_account: {
+      bank_name: 'Bank BPD Papua (Bank Papua)',
+      account_number: '100-01-000000-0',
+      account_holder: 'Bendahara Penerimaan Dishub Kab. Mimika'
+    }
+  };
+};
+
+exports.uploadEmergencyPaymentReceipt = async (token, file, body) => {
+  if (!token) throw new Error('Token pembayaran tidak valid');
+  if (!file) throw new Error('File bukti pembayaran wajib dilampirkan');
+
+  const invoiceData = await exports.getEmergencyInvoiceByToken(token);
+  const { payment_method, sender_name, sender_bank, notes } = body;
+
+  const currentDetails = typeof invoiceData.details === 'string' ? JSON.parse(invoiceData.details) : (invoiceData.details || []);
+  const detailItem = Array.isArray(currentDetails) ? currentDetails[0] : currentDetails;
+
+  const updatedDetailItem = {
+    ...detailItem,
+    sender_name: sender_name || '-',
+    sender_bank: sender_bank || '-',
+    payment_notes: notes || '-'
+  };
+
+  const receiptUrl = `/uploads/receipts/${file.filename}`;
+
+  const updated = await prisma.invoices.update({
+    where: { id: invoiceData.id },
+    data: {
+      status: 'Pending Verification',
+      payment_receipt: receiptUrl,
+      payment_method: payment_method || 'Transfer Bank',
+      payment_date: new Date(),
+      details: [updatedDetailItem]
+    },
+    include: {
+      tenants: true,
+      contracts: true
+    }
+  });
+
+  return updated;
+};
+
+exports.generateMiniAirportSkrd = async (logId, options = {}) => {
+  const parsedLogId = Number.parseInt(logId, 10);
+  const log = await prisma.operational_logs.findUnique({
+    where: { id: parsedLogId },
+    include: {
+      tenants: true,
+      contracts: true,
+      rental_applications: true
+    }
+  });
+
+  if (!log) throw new Error('Log pendaratan Mini Airport tidak ditemukan');
+  if (log.billing_status === 'Billed') throw new Error('Log pendaratan ini sudah diterbitkan SKRD');
+
+  let parsedNotes = {};
+  if (typeof log.notes === 'string') {
+    try { parsedNotes = JSON.parse(log.notes); } catch (e) { parsedNotes = {}; }
+  }
+
+  // Hitung komponen tax terbaru dari master_taxes
+  const { calculateMiniAirportTaxes } = require('./miniAirportBillingService');
+  const taxCalc = await calculateMiniAirportTaxes({
+    aircraft_type_id: parsedNotes.aircraft_type_id || null,
+    aircraft_type_name: parsedNotes.aircraft_type || '',
+    passengers_count: parsedNotes.passengers_count || 1,
+    is_overnight: log.is_overnight,
+    overnight_nights: parsedNotes.overnight_nights || (log.is_overnight ? 1 : 0)
+  });
+
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const count = await prisma.invoices.count();
+  const seq = String(count + 1).padStart(3, '0');
+  const invoiceNumber = `SKRD-MAP/${year}/${month}/${seq}`;
+
+  // Jatuh tempo standar 30 hari kalender
+  const dueDate = new Date();
+  dueDate.setDate(dueDate.getDate() + 30);
+
+  // Hubungkan ke kontrak payung aktif milik tenant jika belum ada
+  let contractId = log.contract_id || log.rental_applications?.contract_id;
+  if (!contractId) {
+    const activeMiniPayung = await prisma.contracts.findFirst({
+      where: {
+        tenant_id: log.tenant_id,
+        contract_type: 'PKS Payung Mini Airport',
+        status: { in: ['Aktif', 'Active'] }
+      },
+      orderBy: { id: 'desc' }
+    });
+    if (activeMiniPayung) {
+      contractId = activeMiniPayung.id;
+    } else {
+      const activePayung = await prisma.contracts.findFirst({
+        where: {
+          tenant_id: log.tenant_id,
+          contract_type: { in: ['Payung', 'PKS Payung Mozes Kilangin'] },
+          status: { in: ['Aktif', 'Active'] }
+        },
+        orderBy: { id: 'desc' }
+      });
+      if (activePayung) contractId = activePayung.id;
+    }
+  }
+
+  const invoiceDetails = {
+    service_type: 'Mini Airport',
+    log_id: log.id,
+    application_id: log.application_id,
+    application_number: log.rental_applications?.application_number || parsedNotes.application_number || '-',
+    airport_name: parsedNotes.airport_name || 'Mini Airport Perintis',
+    airport_code: parsedNotes.airport_code || '-',
+    airport_location: parsedNotes.airport_location || 'Papua Tengah',
+    registration_number: log.registration_number,
+    aircraft_type: parsedNotes.aircraft_type || 'Pesawat Perintis',
+    allocated_stand: parsedNotes.allocated_stand || log.parking_location || 'STAND 01',
+    entry_time: log.entry_time,
+    exit_time: log.exit_time || today,
+    passengers_count: parsedNotes.passengers_count || 1,
+    is_overnight: log.is_overnight,
+    overnight_nights: parsedNotes.overnight_nights || (log.is_overnight ? 1 : 0),
+    taxes: taxCalc.taxes,
+    total_amount: taxCalc.totalAmount,
+    issued_by: options.issued_by || 'Dinas Perhubungan Papua Tengah'
+  };
+
+  const [newInvoice] = await prisma.$transaction([
+    prisma.invoices.create({
+      data: {
+        invoice_number: invoiceNumber,
+        contract_id: contractId,
+        tenant_id: log.tenant_id,
+        invoice_type: 'Mini Airport',
+        amount: taxCalc.totalAmount,
+        due_date: dueDate,
+        status: 'Unpaid',
+        details: invoiceDetails
+      },
+      include: {
+        tenants: true,
+        contracts: true
+      }
+    }),
+    prisma.operational_logs.update({
+      where: { id: log.id },
+      data: {
+        billing_status: 'Billed',
+        amount: taxCalc.totalAmount,
+        exit_time: log.exit_time || today
+      }
+    })
+  ]);
+
+  await prisma.operational_logs.update({
+    where: { id: log.id },
+    data: { invoice_id: newInvoice.id }
+  });
+
+  return newInvoice;
+};
+

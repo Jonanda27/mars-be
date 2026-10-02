@@ -3,7 +3,7 @@ const tenantService = require('../services/tenantService');
 
 exports.getAllInvoices = async (req, res, next) => {
   try {
-    const invoices = await invoiceService.getAllInvoices();
+    const invoices = await invoiceService.getAllInvoices(req.user);
     res.json({ success: true, data: invoices });
   } catch (error) {
     next(error);
@@ -106,6 +106,17 @@ exports.generateHanggarPeriodicInvoice = async (req, res, next) => {
   }
 };
 
+exports.generateMiniAirportSkrd = async (req, res, next) => {
+  try {
+    const logId = req.params.logId;
+    const issuedBy = req.user?.username ? `Dinas Perhubungan (${req.user.username})` : 'Dinas Perhubungan Papua Tengah';
+    const invoice = await invoiceService.generateMiniAirportSkrd(logId, { issued_by: issuedBy });
+    res.status(201).json({ success: true, data: invoice, message: 'SKRD Mini Airport berhasil diterbitkan' });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.generatePenaltyInvoice = async (req, res, next) => {
   try {
     const principalId = req.params.id;
@@ -152,3 +163,29 @@ exports.reissueInvoice = async (req, res, next) => {
   }
 };
 
+exports.getEmergencyInvoiceByToken = async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    const invoice = await invoiceService.getEmergencyInvoiceByToken(token);
+    res.json({ success: true, data: invoice });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.uploadEmergencyPaymentReceipt = async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'Bukti transfer pembayaran (file) wajib diunggah' });
+    }
+    const updatedInvoice = await invoiceService.uploadEmergencyPaymentReceipt(token, req.file, req.body);
+    res.json({
+      success: true,
+      message: 'Bukti pembayaran berhasil diunggah dan sedang menunggu verifikasi admin.',
+      data: updatedInvoice
+    });
+  } catch (error) {
+    next(error);
+  }
+};
