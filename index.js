@@ -19,11 +19,14 @@ initContractMonitor();
 initBillingCron();
 initPenaltyCron();
 
+const path = require('path');
+
 // Middlewares
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev')); // Logging middleware
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
 
 // Use routes
 app.use('/api', routes);
@@ -46,3 +49,4 @@ app.use(errorHandler);
 app.listen(port, () => {
   console.log(`Backend server is running on port ${port}`);
 });
+

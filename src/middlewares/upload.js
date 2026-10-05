@@ -35,6 +35,9 @@ const resolveCompanyName = async (req) => {
   if (req.body?.nama_perusahaan) {
     return req.body.nama_perusahaan;
   }
+  if (req.user?.nama_perusahaan) {
+    return req.user.nama_perusahaan;
+  }
   if (req.user?.tenant_id) {
     try {
       const tenant = await prisma.tenants.findUnique({
@@ -46,6 +49,39 @@ const resolveCompanyName = async (req) => {
       }
     } catch (err) {
       console.error('Failed to fetch tenant name for Cloudinary folder:', err);
+    }
+  }
+  // Cek jika route memiliki parameter invoice id (misal: /api/invoices/:id/upload-receipt)
+  if (req.params?.id && !Number.isNaN(Number(req.params.id))) {
+    try {
+      const inv = await prisma.invoices.findUnique({
+        where: { id: Number.parseInt(req.params.id, 10) },
+        include: { tenants: { select: { nama_perusahaan: true } } }
+      });
+      if (inv?.tenants?.nama_perusahaan) {
+        return inv.tenants.nama_perusahaan;
+      }
+    } catch (err) {
+      console.error('Failed to fetch invoice tenant name for Cloudinary folder:', err);
+    }
+  }
+  // Cek jika route adalah pembayaran darurat via token (/api/invoices/emergency-payment/:token/upload)
+  if (req.params?.token) {
+    try {
+      const inv = await prisma.invoices.findFirst({
+        where: {
+          OR: [
+            { invoice_number: req.params.token },
+            { details: { path: ['tokenDarurat'], equals: req.params.token } }
+          ]
+        },
+        include: { tenants: { select: { nama_perusahaan: true } } }
+      });
+      if (inv?.tenants?.nama_perusahaan) {
+        return inv.tenants.nama_perusahaan;
+      }
+    } catch (err) {
+      console.error('Failed to fetch emergency invoice tenant name for Cloudinary folder:', err);
     }
   }
   return 'General';

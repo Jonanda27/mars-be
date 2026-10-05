@@ -189,3 +189,33 @@ exports.uploadEmergencyPaymentReceipt = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.checkPublicInvoice = async (req, res, next) => {
+  try {
+    const { q } = req.query;
+    if (!q || !q.trim()) {
+      return res.status(200).json({
+        success: false,
+        data: null,
+        message: 'Silakan masukkan nomor SKRD atau Kode Invoice.'
+      });
+    }
+
+    const result = await invoiceService.checkPublicInvoice(q);
+    if (!result) {
+      return res.status(200).json({
+        success: false,
+        data: null,
+        message: `Tagihan atau SKRD dengan nomor/kata kunci "${q}" tidak ditemukan di sistem database.`
+      });
+    }
+
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+

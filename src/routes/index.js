@@ -21,6 +21,7 @@ const reportRoutes = require('./reportRoutes');
 const dashboardRoutes = require('./dashboardRoutes');
 const userRoutes = require('./userRoutes');
 const miniAirportLogRoutes = require('./miniAirportLogRoutes');
+const chatRoutes = require('./chatRoutes');
 
 // Auth Routes
 router.use('/auth', authRoutes);
@@ -47,6 +48,15 @@ router.use('/overnight-reports', overnightReportRoutes);
 router.use('/schedules', flightScheduleRoutes);
 router.use('/reports', reportRoutes);
 router.use('/dashboard', dashboardRoutes);
+router.use('/chat', chatRoutes);
+router.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
 
 module.exports = router;
+
 

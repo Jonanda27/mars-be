@@ -1011,7 +1011,7 @@ exports.uploadEmergencyPaymentReceipt = async (token, file, body) => {
     payment_notes: notes || '-'
   };
 
-  const receiptUrl = `/uploads/receipts/${file.filename}`;
+  const receiptUrl = file.path || (file.filename ? `/uploads/receipts/${file.filename}` : null);
 
   const updated = await prisma.invoices.update({
     where: { id: invoiceData.id },
@@ -1152,4 +1152,146 @@ exports.generateMiniAirportSkrd = async (logId, options = {}) => {
 
   return newInvoice;
 };
+
+exports.checkPublicInvoice = async (query) => {
+  if (!query || typeof query !== 'string' || !query.trim()) {
+    throw new Error('Nomor SKRD atau Kode Invoice wajib diisi.');
+  }
+
+  const cleanQuery = query.trim();
+
+  // Search by exact or partial invoice_number, or tenant company name
+  const invoices = await prisma.invoices.findMany({
+    where: {
+      OR: [
+        { invoice_number: { contains: cleanQuery, mode: 'insensitive' } },
+        { tenants: { nama_perusahaan: { contains: cleanQuery, mode: 'insensitive' } } }
+      ]
+    },
+    include: {
+      tenants: {
+        select: {
+          id: true,
+          nama_perusahaan: true,
+          tenant_id_str: true
+        }
+      },
+      contracts: {
+        select: {
+          id: true,
+          contract_number: true,
+          jenis_pemanfaatan: true,
+          assets: {
+            select: {
+              nama_aset: true,
+              kode_aset: true,
+              lokasi: true
+            }
+          }
+        }
+      }
+    },
+    orderBy: {
+      id: 'desc'
+    },
+    take: 5
+  });
+
+  if (!invoices || invoices.length === 0) {
+    return null;
+  }
+
+  const target = invoices[0];
+
+  // Parse details if available
+  let parsedDetails = null;
+  try {
+    parsedDetails = typeof target.details === 'string' ? JSON.parse(target.details) : target.details;
+    if (Array.isArray(parsedDetails) && parsedDetails.length > 0) {
+      parsedDetails = parsedDetails[0];
+    }
+  } catch (e) {
+    parsedDetails = null;
+  }
+
+  const rawStatus = (target.status || '').toLowerCase();
+  const isPaid = rawStatus === 'paid' || rawStatus === 'lunas' || rawStatus === 'verified';
+  const isEmergency = (target.invoice_type || '').toLowerCase().includes('darurat') || target.invoice_type === 'Pendaratan Darurat';
+
+  let statusUi = 'UNPAID';
+  if (isPaid) {
+    statusUi = 'PAID';
+  } else if (isEmergency) {
+    statusUi = 'EMERGENCY';
+  }
+
+  let layanan = target.invoice_type || 'Retribusi Jasa Kebandarudaraan';
+  if (target.contracts?.jenis_pemanfaatan) {
+    layanan = target.contracts.jenis_pemanfaatan;
+  } else if (target.contracts?.assets?.nama_aset) {
+    layanan = `${target.invoice_type} - ${target.contracts.assets.nama_aset}`;
+  } else if (parsedDetails?.alasan) {
+    layanan = parsedDetails.alasan;
+  } else if (parsedDetails?.registration_number) {
+    layanan = `${target.invoice_type} (${parsedDetails.registration_number})`;
+  }
+
+  // Virtual Account Bank Papua (format: 9388 + 4 digit tenant + 8 digit invoice)
+  const tenantPad = String(target.tenant_id || 1).padStart(4, '0');
+  const invPad = String(target.id || 1).padStart(8, '0');
+  const noVa = `9388 ${tenantPad} ${invPad.slice(0, 4)} ${invPad.slice(4)}`;
+
+  const tglTerbit = target.created_at
+    ? new Date(target.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '-';
+
+  const jatuhTempo = target.due_date
+    ? new Date(target.due_date).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '-';
+
+  const tglLunas = target.payment_date
+    ? new Date(target.payment_date).toLocaleDateString('id-ID', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      }) + ' WIT'
+    : (isPaid ? 'Tervalidasi Kas Daerah' : undefined);
+
+  const ntb = isPaid
+    ? (target.payment_receipt && typeof target.payment_receipt === 'string' && target.payment_receipt.startsWith('BP-TRX')
+        ? target.payment_receipt
+        : `BP-TRX-${new Date(target.payment_date || target.updated_at || Date.now()).toISOString().slice(0, 10).replace(/-/g, '')}-${String(target.id).padStart(4, '0')}`)
+    : undefined;
+
+  let keterangan = 'Menunggu pembayaran via Virtual Account Bank Papua (Kasda Kab. Mimika).';
+  if (isPaid) {
+    keterangan = 'Tagihan telah lunas tervalidasi ke Kas Daerah (Kasda) Kab. Mimika.';
+  } else if (isEmergency) {
+    keterangan = 'Tagihan pendaratan darurat. Dapat dibayar langsung via QRIS / Virtual Account Kasda.';
+  }
+
+  const skrdNo = target.invoice_number;
+  const invoiceNo = skrdNo.startsWith('SKRD') ? skrdNo.replace('SKRD', 'INV') : `INV/${skrdNo}`;
+
+  return {
+    id: target.id,
+    status: statusUi,
+    skrdNo,
+    invoiceNo,
+    wajibRetribusi: target.tenants?.nama_perusahaan || 'Mitra Bandara Mozes Kilangin',
+    layanan,
+    tglTerbit,
+    jatuhTempo: isPaid ? undefined : jatuhTempo,
+    tglLunas: isPaid ? tglLunas : undefined,
+    totalTagihan: Number(target.amount) + Number(target.penalty_amount || 0),
+    noVa,
+    ntb,
+    tokenDarurat: parsedDetails?.emergency_payment_token || (isEmergency ? `emg-token-${target.id}-safe` : undefined),
+    keterangan,
+    totalMatches: invoices.length
+  };
+};
+
 
