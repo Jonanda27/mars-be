@@ -10,6 +10,14 @@ exports.requestOtp = async (req, res, next) => {
       throw err;
     }
 
+    const emailSchema = joi.string().email().required();
+    const { error: emailErr } = emailSchema.validate(email);
+    if (emailErr) {
+      const err = new Error('Format email tidak valid (contoh: user@gmail.com)');
+      err.statusCode = 400;
+      throw err;
+    }
+
     const result = await authService.requestOtp(email);
     res.status(200).json({
       success: true,
@@ -33,10 +41,10 @@ exports.register = async (req, res, next) => {
       npwp: joi.string().allow('', null),
       alamat: joi.string().allow('', null),
       pic: joi.string().required(),
-      nomor_telepon: joi.string().required(),
+      nomor_telepon: joi.string().min(10).required(),
       email: joi.string().email().required(),
       otp_code: joi.string().length(6).required()
-    });
+    }).unknown(true);
 
     const { error } = schema.validate(req.body);
     if (error) {

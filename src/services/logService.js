@@ -356,20 +356,20 @@ exports.updateLogExit = async (id, data) => {
     }
   });
 
-  // Sinkronisasi status flight_schedules menjadi 'Selesai' jika armada checkout
+  // Sinkronisasi status flight_schedules menjadi 'Checked-Out' jika armada checkout
   if (log.schedule_id) {
     await prisma.flight_schedules.update({
       where: { id: log.schedule_id },
-      data: { status: 'Selesai' }
-    }).catch(err => console.error('Failed to update schedule status to Selesai on exit:', err));
+      data: { status: 'Checked-Out' }
+    }).catch(err => console.error('Failed to update schedule status to Checked-Out on exit:', err));
   } else if (log.registration_number) {
     await prisma.flight_schedules.updateMany({
       where: {
         registration_number: log.registration_number,
         status: { in: ['Checked-In', 'Disetujui'] }
       },
-      data: { status: 'Selesai' }
-    }).catch(err => console.error('Failed to update schedule status by regNo to Selesai on exit:', err));
+      data: { status: 'Checked-Out' }
+    }).catch(err => console.error('Failed to update schedule status by regNo to Checked-Out on exit:', err));
   }
 
   return updatedLog;

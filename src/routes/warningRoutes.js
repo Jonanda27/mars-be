@@ -12,4 +12,7 @@ router.get('/tenant', authMiddleware, warningController.getTenantWarnings);
 // Send warning letter email manually by Dinas / Admin
 router.post('/:id/send-email', authMiddleware, authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas'), warningController.sendWarningEmail);
 
+// Trigger manual arrears check & notification generation (H-7, H+7, STRD)
+router.post('/trigger-check', authMiddleware, authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas'), warningController.triggerWarningCheck);
+
 module.exports = router;

@@ -95,51 +95,99 @@ const processContractExpiration = async (contract, today) => {
   return null;
 };
 
-const processInvoiceWarning = async (invoice, diffDays) => {
-  if (diffDays >= 60) {
-    const existingSP2 = await prisma.warnings.findFirst({
-      where: { invoice_id: invoice.id, type: 'SP 2' }
+const processInvoiceWarning = async (invoice, overdueDays) => {
+  // 1. Tahap 3: Penerbitan STRD (Pasal 21 ayat 7-8 Perbup 25/2024)
+  // Diterbitkan jika 7 hari setelah Surat Teguran (H+14 sejak jatuh tempo SKRD) belum dilunasi
+  if (overdueDays >= 14) {
+    const existingStrd = await prisma.warnings.findFirst({
+      where: { invoice_id: invoice.id, type: 'STRD' }
     });
 
-    if (!existingSP2) {
+    // Hitung sanksi administratif bunga 1% per bulan (Pasal 21 ayat 8)
+    const monthsOverdue = Math.max(1, Math.min(24, Math.ceil(overdueDays / 30)));
+    const calculatedPenalty = Math.round(Number(invoice.amount) * 0.01 * monthsOverdue);
+
+    if (!existingStrd) {
       await prisma.warnings.create({
         data: {
-          warning_number: `SP2-${Date.now()}-${invoice.id}`,
+          warning_number: `STRD-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${invoice.id}`,
           tenant_id: invoice.tenant_id,
           invoice_id: invoice.id,
-          type: 'SP 2',
-          message: `Tagihan No. ${invoice.invoice_number} telah menunggak lebih dari 60 hari. Akses layanan dibatasi.`,
-          status: 'Sent'
+          type: 'STRD',
+          message: `Surat Tagihan Retribusi Daerah (STRD) diterbitkan sesuai Pasal 21 ayat (7) & (8) Perbup No. 25 Tahun 2024 atas tagihan SKRD No. ${invoice.invoice_number}. Dikenakan sanksi bunga administrasi 1% per bulan.`,
+          status: 'Pending'
         }
       });
 
+      // Batasi hak pemanfaatan aset / layanan bandara jika menunggak sampai tahap STRD
       await prisma.tenants.update({
         where: { id: invoice.tenant_id },
         data: { status_pembayaran: 'Restricted' }
       });
-
-      return 'SP2';
     }
-  } else if (diffDays >= 30) {
-    const existingSP1 = await prisma.warnings.findFirst({
-      where: { invoice_id: invoice.id, type: 'SP 1' }
+
+    // Pastikan sanksi denda dan status Overdue tercatat di invoice
+    await prisma.invoices.update({
+      where: { id: invoice.id },
+      data: {
+        penalty_amount: calculatedPenalty,
+        status: 'Overdue'
+      }
     });
 
-    if (!existingSP1) {
+    return 'STRD';
+  } 
+  // 2. Tahap 2: Surat Teguran (Pasal 21 ayat 4 & 6)
+  // Diterbitkan apabila 7 hari setelah jatuh tempo pembayaran (H+7) belum melakukan pelunasan
+  else if (overdueDays >= 7) {
+    const existingTeguran = await prisma.warnings.findFirst({
+      where: { invoice_id: invoice.id, type: 'Surat Teguran' }
+    });
+
+    if (!existingTeguran) {
       await prisma.warnings.create({
         data: {
-          warning_number: `SP1-${Date.now()}-${invoice.id}`,
+          warning_number: `ST-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${invoice.id}`,
           tenant_id: invoice.tenant_id,
           invoice_id: invoice.id,
-          type: 'SP 1',
-          message: `Tagihan No. ${invoice.invoice_number} telah menunggak lebih dari 30 hari. Segera lakukan pelunasan untuk menghindari sanksi lanjutan.`,
-          status: 'Sent'
+          type: 'Surat Teguran',
+          message: `Surat Teguran resmi H+7 sesuai Pasal 21 ayat (4) & (6) Perbup No. 25 Tahun 2024: SKRD No. ${invoice.invoice_number} telah melewati tanggal jatuh tempo selama ${overdueDays} hari. Wajib dilunasi paling lama 7 hari kalender sebelum penagihan STRD.`,
+          status: 'Pending'
         }
       });
 
-      return 'SP1';
+      await prisma.invoices.update({
+        where: { id: invoice.id },
+        data: { status: 'Overdue' }
+      });
+
+      return 'Surat Teguran';
+    }
+  } 
+  // 3. Tahap 1: Surat Pemberitahuan (Pasal 21 ayat 3)
+  // Disampaikan dalam jangka waktu 7 hari sebelum tanggal jatuh tempo (H-7) tercantum dalam SKRD
+  else if (overdueDays >= -7 && overdueDays <= 0) {
+    const existingPemberitahuan = await prisma.warnings.findFirst({
+      where: { invoice_id: invoice.id, type: 'Surat Pemberitahuan' }
+    });
+
+    if (!existingPemberitahuan) {
+      const daysLeft = Math.abs(overdueDays);
+      await prisma.warnings.create({
+        data: {
+          warning_number: `PB-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${invoice.id}`,
+          tenant_id: invoice.tenant_id,
+          invoice_id: invoice.id,
+          type: 'Surat Pemberitahuan',
+          message: `Surat Pemberitahuan resmi H-7 sesuai Pasal 21 ayat (3) Perbup No. 25 Tahun 2024: SKRD No. ${invoice.invoice_number} akan jatuh tempo dalam ${daysLeft} hari kalender mendatang. Harap melakukan penyetoran melalui Bank Papua sebelum tanggal jatuh tempo.`,
+          status: 'Pending'
+        }
+      });
+
+      return 'Surat Pemberitahuan';
     }
   }
+
   return null;
 };
 
@@ -175,33 +223,38 @@ const checkContractExpirations = async () => {
 };
 
 const checkArrearsAndGenerateWarnings = async () => {
-  console.log('--- CRON JOB: Checking arrears and generating warnings ---');
+  console.log('--- CRON JOB: Checking arrears and generating statutory Perbup 25/2024 notices ---');
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     const unpaidInvoices = await prisma.invoices.findMany({
-      where: { status: 'Unpaid', due_date: { not: null } },
+      where: { status: { in: ['Unpaid', 'Overdue'] }, due_date: { not: null } },
       include: { contracts: true }
     });
 
-    let sp1Count = 0;
-    let sp2Count = 0;
+    let pbCount = 0;
+    let stCount = 0;
+    let strdCount = 0;
 
     for (const invoice of unpaidInvoices) {
       const dueDate = new Date(invoice.due_date);
       dueDate.setHours(0, 0, 0, 0);
 
-      if (today > dueDate) {
-        const diffTime = Math.abs(today - dueDate);
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        const result = await processInvoiceWarning(invoice, diffDays);
-        if (result === 'SP1') sp1Count++;
-        else if (result === 'SP2') sp2Count++;
-      }
+      // overdueDays:
+      // > 0 jika sudah lewat jatuh tempo
+      // < 0 jika masih sebelum jatuh tempo (H-7)
+      // = 0 jika tepat hari ini jatuh tempo
+      const diffTime = today.getTime() - dueDate.getTime();
+      const overdueDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+      const result = await processInvoiceWarning(invoice, overdueDays);
+      if (result === 'Surat Pemberitahuan') pbCount++;
+      else if (result === 'Surat Teguran') stCount++;
+      else if (result === 'STRD') strdCount++;
     }
 
-    console.log(`Arrears Check Complete: Generated ${sp1Count} SP1 and ${sp2Count} SP2.`);
+    console.log(`Perbup 25/2024 Check Complete: Generated ${pbCount} Surat Pemberitahuan (H-7), ${stCount} Surat Teguran (H+7), ${strdCount} STRD.`);
   } catch (error) {
     console.error('Error running arrears check cron job:', error);
   }

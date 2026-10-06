@@ -14,7 +14,12 @@ exports.getAllInvoices = async (user = null) => {
         }
       },
       tenants: true,
-      operational_logs: true
+      operational_logs: true,
+      warnings: {
+        orderBy: {
+          created_at: 'desc'
+        }
+      }
     },
     orderBy: {
       created_at: 'desc'
@@ -54,7 +59,12 @@ exports.getTenantInvoices = async (tenantId) => {
         }
       },
       tenants: true,
-      operational_logs: true
+      operational_logs: true,
+      warnings: {
+        orderBy: {
+          created_at: 'desc'
+        }
+      }
     },
     orderBy: {
       created_at: 'desc'
@@ -75,7 +85,12 @@ exports.getInvoiceById = async (id) => {
         }
       },
       tenants: true,
-      operational_logs: true
+      operational_logs: true,
+      warnings: {
+        orderBy: {
+          created_at: 'desc'
+        }
+      }
     }
   });
 };
@@ -293,29 +308,52 @@ exports.verifyPayment = async (id) => {
     }
   });
 
-  // Activate contract when paid
-  const updatedContract = await prisma.contracts.update({
-    where: { id: invoice.contract_id },
-    data: {
-      status: 'Aktif'
-    },
-    include: {
-      rental_applications: true
-    }
+  // Tandai seluruh surat peringatan / STRD terkait invoice ini menjadi Resolved / Lunas
+  await prisma.warnings.updateMany({
+    where: { invoice_id: Number.parseInt(id, 10) },
+    data: { status: 'Resolved' }
   });
 
-  // Link aircrafts to the asset if applicable
-  if (updatedContract.rental_applications?.specific_needs) {
-    const specificNeeds = updatedContract.rental_applications.specific_needs;
-    if (Array.isArray(specificNeeds.aircraft_ids) && specificNeeds.aircraft_ids.length > 0) {
-      const aircraftIds = specificNeeds.aircraft_ids.map(aid => Number.parseInt(aid, 10));
-      await prisma.aircrafts.updateMany({
-        where: { id: { in: aircraftIds } },
-        data: { 
-          asset_id: updatedContract.asset_id,
-          status: 'In Use' 
-        }
-      });
+  // Jika tenant sudah tidak memiliki tunggakan/STRD aktif lain, pulihkan status pembayaran
+  const remainingOverdue = await prisma.invoices.count({
+    where: {
+      tenant_id: invoice.tenant_id,
+      status: { in: ['Unpaid', 'Overdue'] },
+      due_date: { lt: new Date() }
+    }
+  });
+  if (remainingOverdue === 0) {
+    await prisma.tenants.update({
+      where: { id: invoice.tenant_id },
+      data: { status_pembayaran: 'Current' }
+    });
+  }
+
+  // Activate contract when paid (jika terikat kontrak PKS)
+  if (invoice.contract_id) {
+    const updatedContract = await prisma.contracts.update({
+      where: { id: invoice.contract_id },
+      data: {
+        status: 'Aktif'
+      },
+      include: {
+        rental_applications: true
+      }
+    });
+
+    // Link aircrafts to the asset if applicable
+    if (updatedContract.rental_applications?.specific_needs) {
+      const specificNeeds = updatedContract.rental_applications.specific_needs;
+      if (Array.isArray(specificNeeds.aircraft_ids) && specificNeeds.aircraft_ids.length > 0) {
+        const aircraftIds = specificNeeds.aircraft_ids.map(aid => Number.parseInt(aid, 10));
+        await prisma.aircrafts.updateMany({
+          where: { id: { in: aircraftIds } },
+          data: { 
+            asset_id: updatedContract.asset_id,
+            status: 'In Use' 
+          }
+        });
+      }
     }
   }
 
