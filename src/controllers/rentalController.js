@@ -1,22 +1,7 @@
 const rentalService = require('../services/rentalService');
-const { notifyRole, createNotification } = require('./notificationController');
+const { notifyRole, createNotification, getTenantUserId } = require('./notificationController');
 const prisma = require('../config/db');
-
-// Helper to reliably find the user ID corresponding to a tenant
-const getTenantUserId = async (tenantId) => {
-  if (!tenantId) return null;
-  const tenant = await prisma.tenants.findUnique({
-    where: { id: tenantId },
-    select: { user_id: true }
-  });
-  if (tenant?.user_id) return tenant.user_id;
-
-  const user = await prisma.users.findFirst({
-    where: { tenants: { some: { id: tenantId } } },
-    select: { id: true }
-  });
-  return user?.id || null;
-};
+const { filterApplicationsByScope, getAdminScope, classifyApplication } = require('../utils/adminScope');
 
 exports.createRentalApplication = async (req, res, next) => {
   try {
@@ -26,9 +11,51 @@ exports.createRentalApplication = async (req, res, next) => {
     }
     const newApp = await rentalService.createApplication(tenantId, req.body, req.file);
     
-    // Notify Admin and Kadis
-    notifyRole('admin', 'Permohonan Baru', `Tenant ${req.user.username} mengajukan permohonan sewa baru (${newApp.application_number}).`, 'INFO', '/admin/permohonan');
-    notifyRole('kepala dinas', 'Permohonan Baru', `Tenant ${req.user.username} mengajukan permohonan sewa baru (${newApp.application_number}).`, 'INFO', `/eksekutif/permohonan/${newApp.id}`);
+    // Ambil identitas perusahaan tenant agar notifikasi jelas dan informatif
+    const tenantInfo = await prisma.tenants.findUnique({
+      where: { id: Number(tenantId) },
+      select: { nama_perusahaan: true }
+    });
+    const tenantName = tenantInfo?.nama_perusahaan 
+      ? `${tenantInfo.nama_perusahaan} (${req.user.username})` 
+      : req.user.username;
+
+    // 1. Notifikasi ke Kepala Dinas: Menunggu persetujuan surat permohonan
+    await notifyRole(
+      'kepala dinas',
+      'Surat Permohonan Baru Menunggu Persetujuan Kadis',
+      `Mitra ${tenantName} telah mengajukan surat permohonan sewa baru (${newApp.application_number}) dan menunggu verifikasi/persetujuan dari Kepala Dinas.`,
+      'INFO',
+      `/eksekutif/permohonan/${newApp.id}`
+    );
+
+    // 2. Notifikasi ke Admin Umum & Dinas Perhubungan
+    await notifyRole(
+      ['admin', 'dinas'],
+      'Permohonan Sewa Baru Masuk',
+      `Mitra ${tenantName} mengajukan permohonan sewa baru (${newApp.application_number}).`,
+      'INFO',
+      '/admin/permohonan'
+    );
+
+    // 3. Notifikasi ke Admin Bidang Khusus (Hanggar / Apron / Ruangan)
+    const appScope = classifyApplication(newApp);
+    if (appScope === 'HANGGAR') {
+      await notifyRole('admin_hanggar', 'Permohonan Sewa Hanggar Baru', `Mitra ${tenantName} mengajukan permohonan sewa hanggar (${newApp.application_number}).`, 'INFO', '/admin/permohonan');
+    } else if (appScope === 'APRON') {
+      await notifyRole('admin_apron', 'Permohonan Sewa Apron Baru', `Mitra ${tenantName} mengajukan permohonan sewa apron (${newApp.application_number}).`, 'INFO', '/admin/permohonan');
+    } else if (appScope === 'RUANGAN') {
+      await notifyRole('admin_ruangan', 'Permohonan Sewa Ruangan Baru', `Mitra ${tenantName} mengajukan permohonan sewa ruangan (${newApp.application_number}).`, 'INFO', '/admin/permohonan');
+    }
+
+    // 4. Notifikasi Konfirmasi Real-Time ke Tenant Pengaju
+    await createNotification(
+      req.user.id,
+      'Surat Permohonan Terkirim',
+      `Surat permohonan sewa Anda (${newApp.application_number}) telah berhasil dikirim dan sedang menunggu verifikasi Kepala Dinas.`,
+      'INFO',
+      `/tenant/permohonan/${newApp.id}`
+    );
 
     res.status(201).json({ success: true, message: 'Application created successfully', data: newApp });
   } catch (error) {
@@ -48,23 +75,23 @@ exports.verifyLetter = async (req, res, next) => {
       if (app.status === 'Menunggu TTD Kontrak Payung') {
         await createNotification(
           tenantUserId,
-          'Surat Disetujui - Tanda Tangan Kontrak Payung',
-          `Surat permohonan sewa Anda (${app.application_number}) telah disetujui. Draf Kontrak Payung telah diterbitkan, silakan tanda tangani Kontrak Payung untuk melanjutkan ke pemilihan layanan.`,
+          'Surat Permohonan Disetujui Kadis - TTD Kontrak Payung',
+          `Surat permohonan sewa Anda (${app.application_number}) telah disetujui oleh Kepala Dinas. Draf Kontrak Payung telah diterbitkan, silakan tandatangani Kontrak Payung untuk melanjutkan ke pemilihan layanan.`,
           'SUCCESS',
           `/tenant/permohonan/${id}`
         );
       } else if (status === 'Surat Disetujui') {
         await createNotification(
           tenantUserId,
-          'Surat Permohonan Disetujui',
-          `Surat permohonan sewa Anda (${app.application_number}) telah disetujui oleh Kepala Dinas. Silakan lengkapi rincian permohonan sewa.`,
+          'Surat Permohonan Disetujui Kadis',
+          `Surat permohonan sewa Anda (${app.application_number}) telah disetujui oleh Kepala Dinas. Silakan lengkapi rincian permohonan sewa Anda.`,
           'SUCCESS',
           `/tenant/permohonan/${id}`
         );
       } else if (status === 'Ditolak') {
         await createNotification(
           tenantUserId,
-          'Surat Permohonan Ditolak',
+          'Surat Permohonan Ditolak Kadis',
           `Surat permohonan sewa Anda (${app.application_number}) telah ditolak oleh Kepala Dinas.`,
           'WARNING',
           `/tenant/permohonan/${id}`
@@ -80,9 +107,9 @@ exports.verifyLetter = async (req, res, next) => {
       }
     }
 
-    // Also notify Admin
+    // Also notify Admin & Dinas
     await notifyRole(
-      'admin',
+      ['admin', 'dinas'],
       `Verifikasi Surat: ${status}`,
       `Kepala Dinas telah memverifikasi surat permohonan ${app.application_number} (${status}).`,
       status === 'Surat Disetujui' ? 'SUCCESS' : 'INFO',
@@ -184,7 +211,8 @@ exports.getAllApplications = async (req, res, next) => {
     }
 
     const apps = await rentalService.getAllApplications(airportId, miniAirportId);
-    res.status(200).json({ success: true, data: apps });
+    const scopedApps = filterApplicationsByScope(apps, req.user);
+    res.status(200).json({ success: true, data: scopedApps });
   } catch (error) {
     next(error);
   }
@@ -221,6 +249,18 @@ exports.getApplicationById = async (req, res, next) => {
             success: false,
             message: 'Anda tidak memiliki hak akses untuk permohonan di luar bandara Anda.'
           });
+        }
+
+        // Scope check untuk admin_hanggar, admin_apron, admin_ruangan
+        const scope = getAdminScope(req.user);
+        if (scope === 'HANGGAR' || scope === 'APRON' || scope === 'RUANGAN') {
+          const appScope = classifyApplication(app);
+          if (appScope !== scope) {
+            return res.status(403).json({
+              success: false,
+              message: `Anda tidak memiliki hak akses untuk permohonan layanan ${appScope}.`
+            });
+          }
         }
       }
     }

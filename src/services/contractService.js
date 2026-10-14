@@ -1,20 +1,9 @@
 const prisma = require('../config/db');
 const invoiceService = require('./invoiceService');
+const { filterContractsByScope } = require('../utils/adminScope');
 
 exports.getAllContracts = async (user = null) => {
-  const where = {};
-  const role = typeof user === 'string' ? user : user?.role;
-  const normalizedRole = (role || '').toLowerCase();
-  const miniAirportId = typeof user === 'object' ? user?.mini_airport_id : null;
-
-  if (normalizedRole === 'admin_mini_airport') {
-    where.contract_type = { in: ['PKS Payung Mini Airport', 'Payung'] };
-  } else if (normalizedRole === 'admin') {
-    where.contract_type = { notIn: ['PKS Payung Mini Airport'] };
-  }
-
   const contracts = await prisma.contracts.findMany({
-    where,
     include: {
       tenants: true,
       assets: true,
@@ -23,37 +12,7 @@ exports.getAllContracts = async (user = null) => {
     orderBy: { created_at: 'desc' }
   });
 
-  if (normalizedRole === 'admin_mini_airport') {
-    const targetMiniId = miniAirportId ? Number(miniAirportId) : null;
-    return contracts.filter(c => {
-      let f = c.fasilitas;
-      if (typeof f === 'string') {
-        try { f = JSON.parse(f); } catch (e) { f = {}; }
-      }
-      f = f || {};
-      const isMiniContract = c.contract_type === 'PKS Payung Mini Airport' || Boolean(f.mini_airport_id || f.airport_code);
-      if (!isMiniContract) return false;
-      if (targetMiniId) {
-        return Number(f.mini_airport_id) === targetMiniId;
-      }
-      return true;
-    });
-  }
-
-  if (normalizedRole === 'admin') {
-    // Mozes Kilangin: Sembunyikan kontrak payung mini airport apapun
-    return contracts.filter(c => {
-      let f = c.fasilitas;
-      if (typeof f === 'string') {
-        try { f = JSON.parse(f); } catch (e) { f = {}; }
-      }
-      f = f || {};
-      const isMini = c.contract_type === 'PKS Payung Mini Airport' || Boolean(f.mini_airport_id);
-      return !isMini;
-    });
-  }
-
-  return contracts;
+  return filterContractsByScope(contracts, user);
 };
 
 exports.getContractById = async (id) => {

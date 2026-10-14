@@ -1,6 +1,8 @@
 const prisma = require('../config/db');
 const crypto = require('crypto');
 const emailService = require('./emailService');
+const aiVisionService = require('./aiVisionService');
+const { filterInvoicesByScope } = require('../utils/adminScope');
 
 exports.getAllInvoices = async (user = null) => {
   const allInvoices = await prisma.invoices.findMany({
@@ -19,6 +21,11 @@ exports.getAllInvoices = async (user = null) => {
         orderBy: {
           created_at: 'desc'
         }
+      },
+      invoice_payments: {
+        orderBy: {
+          created_at: 'desc'
+        }
       }
     },
     orderBy: {
@@ -26,24 +33,7 @@ exports.getAllInvoices = async (user = null) => {
     }
   });
 
-  const userRole = (user?.role || '').toLowerCase();
-  if (userRole === 'admin_mini_airport' || user?.mini_airport_id) {
-    const targetMiniId = Number(user.mini_airport_id);
-    return allInvoices.filter(inv => {
-      const isMini = inv.invoice_type === 'Mini Airport';
-      if (!isMini) return false;
-      const det = (inv.details && typeof inv.details === 'object') ? inv.details : {};
-      const f = (inv.contracts?.fasilitas && typeof inv.contracts.fasilitas === 'object') ? inv.contracts.fasilitas : {};
-      const mId = det.airport_id || det.mini_airport_id || f.mini_airport_id;
-      return targetMiniId ? Number(mId) === targetMiniId : true;
-    });
-  }
-
-  if (userRole === 'admin') {
-    return allInvoices.filter(inv => inv.invoice_type !== 'Mini Airport');
-  }
-
-  return allInvoices;
+  return filterInvoicesByScope(allInvoices, user);
 };
 
 exports.getTenantInvoices = async (tenantId) => {
@@ -61,6 +51,11 @@ exports.getTenantInvoices = async (tenantId) => {
       tenants: true,
       operational_logs: true,
       warnings: {
+        orderBy: {
+          created_at: 'desc'
+        }
+      },
+      invoice_payments: {
         orderBy: {
           created_at: 'desc'
         }
@@ -87,6 +82,11 @@ exports.getInvoiceById = async (id) => {
       tenants: true,
       operational_logs: true,
       warnings: {
+        orderBy: {
+          created_at: 'desc'
+        }
+      },
+      invoice_payments: {
         orderBy: {
           created_at: 'desc'
         }
@@ -288,76 +288,267 @@ exports.generateInvoice = async (contractId, isPeriodic = false) => {
   return await createSingleInvoice(contract, year, month, isPeriodic);
 };
 
-exports.uploadReceipt = async (id, filename, method) => {
+exports.uploadReceipt = async (id, filename, method, amount = null, notes = null) => {
+  const invoiceId = Number.parseInt(id, 10);
+  const invoice = await prisma.invoices.findUnique({
+    where: { id: invoiceId }
+  });
+
+  if (!invoice) {
+    throw new Error('Tagihan tidak ditemukan');
+  }
+
+  const currentPaid = Number(invoice.paid_amount || 0);
+  const totalDue = Number(invoice.amount) + Number(invoice.penalty_amount || 0);
+  const remainingDue = Math.max(0, totalDue - currentPaid);
+
+  // Jalankan analisis cerdas AI Vision untuk membaca bukti transfer / STS
+  let ocrData = null;
+  let ocrStatus = 'Pending';
+  try {
+    const aiAnalysis = await aiVisionService.analyzePaymentReceipt(filename);
+    if (aiAnalysis && aiAnalysis.status === 'Success' && aiAnalysis.data) {
+      ocrData = aiAnalysis.data;
+      ocrStatus = 'Success';
+    } else if (aiAnalysis && aiAnalysis.status === 'Skipped') {
+      ocrStatus = 'Skipped';
+      ocrData = { notes: aiAnalysis.message };
+    } else if (aiAnalysis && aiAnalysis.status === 'Failed') {
+      ocrStatus = 'Failed';
+      ocrData = { notes: aiAnalysis.message };
+    }
+  } catch (ocrErr) {
+    console.error('AI Vision error on uploadReceipt:', ocrErr);
+    ocrStatus = 'Failed';
+    ocrData = { notes: ocrErr.message };
+  }
+
+  // Tentukan nominal setoran:
+  // Prioritas 1: Nominal manual jika dikirim
+  // Prioritas 2: Nominal hasil deteksi AI
+  // Prioritas 3: Sisa tagihan (remainingDue)
+  const detectedAmount = ocrData?.amount_detected && Number(ocrData.amount_detected) > 0
+    ? Number(ocrData.amount_detected)
+    : null;
+
+  const paymentAmount = amount && Number(amount) > 0
+    ? Number(amount)
+    : (detectedAmount || remainingDue);
+
+  // Catat pembayaran baru di tabel invoice_payments lengkap dengan data AI Vision
+  await prisma.invoice_payments.create({
+    data: {
+      invoice_id: invoiceId,
+      amount: paymentAmount,
+      payment_method: method || (ocrData?.sender_bank ? `Transfer via ${ocrData.sender_bank}` : 'Bank Papua - Rekening Kas Daerah'),
+      payment_receipt: filename,
+      status: 'Pending',
+      ocr_status: ocrStatus,
+      ocr_data: ocrData,
+      notes: notes || (ocrData?.notes ? ocrData.notes : `Penyetoran bukti transfer senilai Rp${paymentAmount.toLocaleString('id-ID')}`)
+    }
+  });
+
   return await prisma.invoices.update({
-    where: { id: Number.parseInt(id, 10) },
+    where: { id: invoiceId },
     data: {
       status: 'Pending Verification',
       payment_receipt: filename,
-      payment_method: method
+      payment_method: method || (ocrData?.sender_bank ? `Transfer ${ocrData.sender_bank}` : invoice.payment_method)
+    },
+    include: {
+      invoice_payments: {
+        orderBy: { created_at: 'desc' }
+      }
     }
   });
 };
 
-exports.verifyPayment = async (id) => {
-  const invoice = await prisma.invoices.update({
-    where: { id: Number.parseInt(id, 10) },
+exports.verifyPayment = async (id, payload = {}, verifierId = null) => {
+  const invoiceId = Number.parseInt(id, 10);
+  const invoice = await prisma.invoices.findUnique({
+    where: { id: invoiceId },
+    include: {
+      invoice_payments: {
+        where: { status: 'Pending' },
+        orderBy: { created_at: 'desc' },
+        take: 1
+      },
+      warnings: true
+    }
+  });
+
+  if (!invoice) {
+    throw new Error('Tagihan tidak ditemukan');
+  }
+
+  const pendingPayment = invoice.invoice_payments?.[0];
+  const oldPaid = Number(invoice.paid_amount || 0);
+  const totalObligation = Number(invoice.amount) + Number(invoice.penalty_amount || 0);
+
+  // Ambil nominal yang dibayarkan pada transaksi ini
+  const paymentAmount = payload.amount_paid !== undefined && payload.amount_paid !== null && Number(payload.amount_paid) > 0
+    ? Number(payload.amount_paid)
+    : (pendingPayment ? Number(pendingPayment.amount) : Math.max(0, totalObligation - oldPaid));
+
+  const newPaidAmount = oldPaid + paymentAmount;
+  const remainingObligation = Math.max(0, totalObligation - newPaidAmount);
+
+  // Update status payment di invoice_payments
+  if (pendingPayment) {
+    await prisma.invoice_payments.update({
+      where: { id: pendingPayment.id },
+      data: {
+        amount: paymentAmount,
+        status: 'Verified',
+        verified_by_id: verifierId ? Number(verifierId) : null,
+        verified_at: new Date(),
+        notes: payload.notes || pendingPayment.notes
+      }
+    });
+  } else {
+    await prisma.invoice_payments.create({
+      data: {
+        invoice_id: invoiceId,
+        amount: paymentAmount,
+        payment_method: payload.payment_method || invoice.payment_method || 'Kas Daerah',
+        payment_receipt: invoice.payment_receipt,
+        status: 'Verified',
+        verified_by_id: verifierId ? Number(verifierId) : null,
+        verified_at: new Date(),
+        notes: payload.notes || 'Pembayaran diverifikasi langsung oleh petugas dinas'
+      }
+    });
+  }
+
+  // Tentukan status akhir invoice sesuai Perbup Mimika 25/2024:
+  const isFullyPaid = remainingObligation <= 0;
+  const newStatus = isFullyPaid ? 'Paid' : 'Partially Paid';
+
+  const updatedInvoice = await prisma.invoices.update({
+    where: { id: invoiceId },
     data: {
-      status: 'Paid',
-      payment_date: new Date()
+      status: newStatus,
+      paid_amount: newPaidAmount,
+      payment_date: new Date(),
+      payment_method: payload.payment_method || invoice.payment_method
+    },
+    include: {
+      invoice_payments: {
+        orderBy: { created_at: 'desc' }
+      },
+      warnings: true,
+      contracts: true,
+      tenants: true
     }
   });
 
-  // Tandai seluruh surat peringatan / STRD terkait invoice ini menjadi Resolved / Lunas
-  await prisma.warnings.updateMany({
-    where: { invoice_id: Number.parseInt(id, 10) },
-    data: { status: 'Resolved' }
-  });
+  if (isFullyPaid) {
+    // 1. Tandai seluruh surat peringatan / STRD terkait invoice ini menjadi Resolved / Lunas
+    await prisma.warnings.updateMany({
+      where: { invoice_id: invoiceId },
+      data: { status: 'Resolved' }
+    });
 
-  // Jika tenant sudah tidak memiliki tunggakan/STRD aktif lain, pulihkan status pembayaran
-  const remainingOverdue = await prisma.invoices.count({
-    where: {
-      tenant_id: invoice.tenant_id,
-      status: { in: ['Unpaid', 'Overdue'] },
-      due_date: { lt: new Date() }
+    // 2. Jika tenant sudah tidak memiliki tunggakan/STRD aktif lain, pulihkan status pembayaran
+    const remainingOverdue = await prisma.invoices.count({
+      where: {
+        tenant_id: invoice.tenant_id,
+        status: { in: ['Unpaid', 'Overdue', 'Partially Paid'] },
+        id: { not: invoiceId }
+      }
+    });
+    if (remainingOverdue === 0) {
+      await prisma.tenants.update({
+        where: { id: invoice.tenant_id },
+        data: { status_pembayaran: 'Current' }
+      });
     }
-  });
-  if (remainingOverdue === 0) {
+
+    // 3. Activate contract when paid (jika terikat kontrak PKS)
+    if (invoice.contract_id) {
+      const updatedContract = await prisma.contracts.update({
+        where: { id: invoice.contract_id },
+        data: { status: 'Aktif' },
+        include: {
+          rental_applications: true
+        }
+      });
+
+      // Link aircrafts to the asset if applicable
+      if (updatedContract.rental_applications?.specific_needs) {
+        const specificNeeds = updatedContract.rental_applications.specific_needs;
+        if (Array.isArray(specificNeeds.aircraft_ids) && specificNeeds.aircraft_ids.length > 0) {
+          const aircraftIds = specificNeeds.aircraft_ids.map(aid => Number.parseInt(aid, 10));
+          await prisma.aircrafts.updateMany({
+            where: { id: { in: aircraftIds } },
+            data: { 
+              asset_id: updatedContract.asset_id,
+              status: 'In Use' 
+            }
+          });
+        }
+      }
+    }
+  } else {
+    // JIKA SISA / KURANG DIBAYAR (PARTIALLY PAID / SISA TAGIHAN STRD):
+    // 1. Status pembayaran tenant tetap 'Restricted' (pembatasan hak pemanfaatan aset / layanan)
     await prisma.tenants.update({
       where: { id: invoice.tenant_id },
-      data: { status_pembayaran: 'Current' }
-    });
-  }
-
-  // Activate contract when paid (jika terikat kontrak PKS)
-  if (invoice.contract_id) {
-    const updatedContract = await prisma.contracts.update({
-      where: { id: invoice.contract_id },
-      data: {
-        status: 'Aktif'
-      },
-      include: {
-        rental_applications: true
-      }
+      data: { status_pembayaran: 'Restricted' }
     });
 
-    // Link aircrafts to the asset if applicable
-    if (updatedContract.rental_applications?.specific_needs) {
-      const specificNeeds = updatedContract.rental_applications.specific_needs;
-      if (Array.isArray(specificNeeds.aircraft_ids) && specificNeeds.aircraft_ids.length > 0) {
-        const aircraftIds = specificNeeds.aircraft_ids.map(aid => Number.parseInt(aid, 10));
-        await prisma.aircrafts.updateMany({
-          where: { id: { in: aircraftIds } },
-          data: { 
-            asset_id: updatedContract.asset_id,
-            status: 'In Use' 
-          }
-        });
-      }
+    // 2. Update pesan catatan pada STRD warning terkait mutasi pembayaran
+    const strdWarning = invoice.warnings?.find(w => (w.type || '').toUpperCase().includes('STRD'));
+    if (strdWarning) {
+      await prisma.warnings.update({
+        where: { id: strdWarning.id },
+        data: {
+          message: `STRD No. ${strdWarning.warning_number}: Telah diterima setoran sebagian sebesar Rp${paymentAmount.toLocaleString('id-ID')}. Sisa retribusi terutang kurang dibayar sebesar Rp${remainingObligation.toLocaleString('id-ID')}. Sanksi bunga administrasi 1% per bulan tetap berjalan pada sisa kewajiban.`
+        }
+      });
     }
   }
 
-  return invoice;
+  return updatedInvoice;
+};
+
+exports.rejectPayment = async (id, reason = 'Bukti pembayaran tidak valid') => {
+  const invoiceId = Number.parseInt(id, 10);
+  const invoice = await prisma.invoices.findUnique({
+    where: { id: invoiceId },
+    include: {
+      invoice_payments: {
+        where: { status: 'Pending' },
+        orderBy: { created_at: 'desc' },
+        take: 1
+      }
+    }
+  });
+
+  if (!invoice) throw new Error('Tagihan tidak ditemukan');
+
+  const pendingPayment = invoice.invoice_payments?.[0];
+  if (pendingPayment) {
+    await prisma.invoice_payments.update({
+      where: { id: pendingPayment.id },
+      data: {
+        status: 'Rejected',
+        notes: reason
+      }
+    });
+  }
+
+  const currentPaid = Number(invoice.paid_amount || 0);
+  const revertedStatus = currentPaid > 0 ? 'Partially Paid' : (invoice.due_date && new Date(invoice.due_date) < new Date() ? 'Overdue' : 'Unpaid');
+
+  return await prisma.invoices.update({
+    where: { id: invoiceId },
+    data: {
+      status: revertedStatus,
+      payment_receipt: null
+    }
+  });
 };
 
 exports.generateOverstaySkrd = async (logId) => {
@@ -1330,6 +1521,59 @@ exports.checkPublicInvoice = async (query) => {
     keterangan,
     totalMatches: invoices.length
   };
+};
+
+exports.scanReceipt = async (id) => {
+  const invoiceId = Number.parseInt(id, 10);
+  const invoice = await prisma.invoices.findUnique({
+    where: { id: invoiceId },
+    include: {
+      invoice_payments: {
+        orderBy: { created_at: 'desc' },
+        take: 1
+      }
+    }
+  });
+
+  if (!invoice) throw new Error('Tagihan tidak ditemukan');
+  const receiptUrl = invoice.payment_receipt || invoice.invoice_payments?.[0]?.payment_receipt;
+  if (!receiptUrl) throw new Error('Tidak ada file bukti pembayaran yang dapat dipindai');
+
+  const aiAnalysis = await aiVisionService.analyzePaymentReceipt(receiptUrl);
+  let ocrData = null;
+  let ocrStatus = 'Pending';
+
+  if (aiAnalysis && aiAnalysis.status === 'Success' && aiAnalysis.data) {
+    ocrData = aiAnalysis.data;
+    ocrStatus = 'Success';
+  } else {
+    ocrStatus = aiAnalysis.status || 'Failed';
+    ocrData = { notes: aiAnalysis.message };
+  }
+
+  const latestPayment = invoice.invoice_payments?.[0];
+  if (latestPayment) {
+    await prisma.invoice_payments.update({
+      where: { id: latestPayment.id },
+      data: {
+        ocr_status: ocrStatus,
+        ocr_data: ocrData,
+        notes: ocrData?.notes ? ocrData.notes : latestPayment.notes,
+        amount: (ocrData?.amount_detected && Number(ocrData.amount_detected) > 0)
+          ? Number(ocrData.amount_detected)
+          : latestPayment.amount
+      }
+    });
+  }
+
+  return await prisma.invoices.findUnique({
+    where: { id: invoiceId },
+    include: {
+      invoice_payments: { orderBy: { created_at: 'desc' } },
+      tenants: true,
+      warnings: true
+    }
+  });
 };
 
 

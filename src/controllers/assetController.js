@@ -1,13 +1,16 @@
 const assetService = require('../services/assetService');
+const { filterAssetsByScope } = require('../utils/adminScope');
 
 exports.getAssets = async (req, res, next) => {
   try {
     let airportId = null;
-    if (req.user && req.user.role.toLowerCase() === 'admin') {
-      airportId = req.user.airport_id;
+    const role = (req.user?.role || '').toLowerCase();
+    if (['admin', 'admin_hanggar', 'admin_apron', 'admin_ruangan'].includes(role)) {
+      airportId = req.user.airport_id || 1;
     }
     const assets = await assetService.fetchAssets(airportId);
-    res.status(200).json({ success: true, data: assets });
+    const scopedAssets = filterAssetsByScope(assets, req.user);
+    res.status(200).json({ success: true, data: scopedAssets });
   } catch (error) {
     next(error);
   }

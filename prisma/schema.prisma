@@ -162,6 +162,7 @@ model users {
   notifications     notifications[]
   overnight_reports daily_overnight_reports[]
   verified_schedules flight_schedules[]
+  verified_payments invoice_payments[]
 }
 
 model rental_applications {
@@ -267,12 +268,14 @@ model invoices {
   tenant_id           Int
   invoice_type        String?   @default("Sewa Hanggar") @db.VarChar(50) // 'Sewa Ruangan' | 'Sewa Hanggar' | 'SKRD Denda' | 'SKRD Overstay'
   amount              Decimal   @db.Decimal(15, 2)
+  paid_amount         Decimal?  @default(0) @db.Decimal(15, 2)
   penalty_amount      Decimal?  @default(0) @db.Decimal(15, 2)
   due_date            DateTime? @db.Date
-  status              String?   @default("Unpaid") @db.VarChar(50)
+  status              String?   @default("Unpaid") @db.VarChar(50) // 'Unpaid' | 'Pending Verification' | 'Partially Paid' | 'Paid' | 'Overdue' | 'Cancelled'
   payment_method      String?   @db.VarChar(100)
   payment_receipt     String?   @db.VarChar(255)
   payment_date        DateTime? @db.Timestamp(6)
+  payment_history     Json?     // Ringkasan log pembayaran bertahap
   details             Json?     // Rincian rincian pemakaian armada: [{ registration_number, aircraft_type, entry_time, exit_time, total_nights, rate_per_night, subtotal, log_id }]
   created_at          DateTime? @default(now()) @db.Timestamp(6)
   updated_at          DateTime? @default(now()) @db.Timestamp(6)
@@ -281,6 +284,7 @@ model invoices {
   tenants             tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   warnings            warnings[]
   operational_logs    operational_logs[]
+  invoice_payments    invoice_payments[]
 }
 
 model warnings {
@@ -295,6 +299,26 @@ model warnings {
   
   tenants        tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   invoices       invoices? @relation(fields: [invoice_id], references: [id], onDelete: SetNull)
+}
+
+model invoice_payments {
+  id              Int       @id @default(autoincrement())
+  invoice_id      Int
+  amount          Decimal   @db.Decimal(15, 2)
+  payment_method  String?   @db.VarChar(100)
+  payment_receipt String?   @db.VarChar(255)
+  payment_date    DateTime? @default(now()) @db.Timestamp(6)
+  status          String    @default("Pending") @db.VarChar(50) // 'Pending' | 'Verified' | 'Rejected'
+  ocr_status      String?   @default("Pending") @db.VarChar(50) // 'Pending' | 'Success' | 'Failed' | 'Skipped'
+  ocr_data        Json?     // Hasil analisis ekstraksi AI OpenAI: amount_detected, sender_name, bank, ref, dll
+  verified_by_id  Int?
+  verified_at     DateTime? @db.Timestamp(6)
+  notes           String?   @db.Text
+  created_at      DateTime? @default(now()) @db.Timestamp(6)
+  updated_at      DateTime? @default(now()) @db.Timestamp(6)
+
+  invoice         invoices  @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
+  verified_by     users?    @relation(fields: [verified_by_id], references: [id], onDelete: SetNull)
 }
 
 // =========================================================================

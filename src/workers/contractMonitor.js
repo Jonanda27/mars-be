@@ -105,7 +105,14 @@ const processInvoiceWarning = async (invoice, overdueDays) => {
 
     // Hitung sanksi administratif bunga 1% per bulan (Pasal 21 ayat 8)
     const monthsOverdue = Math.max(1, Math.min(24, Math.ceil(overdueDays / 30)));
-    const calculatedPenalty = Math.round(Number(invoice.amount) * 0.01 * monthsOverdue);
+
+    // Berdasarkan Perbup 25/2024:
+    // Sanksi bunga 1% per bulan dikenakan atas sisa pokok retribusi terutang yang belum dilunasi.
+    const originalAmount = Number(invoice.amount || 0);
+    const paidAmount = Number(invoice.paid_amount || 0);
+    const remainingPrincipal = Math.max(0, originalAmount - paidAmount);
+
+    const calculatedPenalty = Math.round(remainingPrincipal * 0.01 * monthsOverdue);
 
     if (!existingStrd) {
       await prisma.warnings.create({
@@ -126,12 +133,14 @@ const processInvoiceWarning = async (invoice, overdueDays) => {
       });
     }
 
-    // Pastikan sanksi denda dan status Overdue tercatat di invoice
+    // Pastikan sanksi denda dan status tercatat di invoice (Pertahankan Partially Paid jika ada pembayaran)
+    const targetStatus = invoice.status === 'Partially Paid' ? 'Partially Paid' : 'Overdue';
+
     await prisma.invoices.update({
       where: { id: invoice.id },
       data: {
         penalty_amount: calculatedPenalty,
-        status: 'Overdue'
+        status: targetStatus
       }
     });
 
@@ -229,7 +238,7 @@ const checkArrearsAndGenerateWarnings = async () => {
     today.setHours(0, 0, 0, 0);
 
     const unpaidInvoices = await prisma.invoices.findMany({
-      where: { status: { in: ['Unpaid', 'Overdue'] }, due_date: { not: null } },
+      where: { status: { in: ['Unpaid', 'Overdue', 'Partially Paid'] }, due_date: { not: null } },
       include: { contracts: true }
     });
 

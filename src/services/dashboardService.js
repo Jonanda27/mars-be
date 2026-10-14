@@ -1,20 +1,27 @@
 const prisma = require('../config/db');
+const { 
+  filterInvoicesByScope, 
+  filterContractsByScope, 
+  filterAssetsByScope, 
+  filterOperationalLogsByScope,
+  getAdminScope 
+} = require('../utils/adminScope');
 
-exports.getAdminDashboardStats = async () => {
+exports.getAdminDashboardStats = async (user = null) => {
   const now = new Date();
   const currentYear = now.getFullYear();
 
   // 1. FINANSIAL METRICS
   const [
-    allInvoices, 
+    rawInvoices, 
     allTenants, 
-    allContracts, 
-    allAssets, 
+    rawContracts, 
+    rawAssets, 
     unbilledLogsCount, 
     pendingSchedulesCount,
-    activeOperationalLogs,
+    rawActiveOperationalLogs,
     allAircrafts,
-    allOperationalLogs
+    rawOperationalLogs
   ] = await Promise.all([
     prisma.invoices.findMany({
       include: {
@@ -63,6 +70,13 @@ exports.getAdminDashboardStats = async () => {
       orderBy: { entry_time: 'desc' }
     })
   ]);
+
+  // Terapkan scope filtering berdasarkan peran admin
+  const allInvoices = filterInvoicesByScope(rawInvoices, user);
+  const allContracts = filterContractsByScope(rawContracts, user);
+  const allAssets = filterAssetsByScope(rawAssets, user);
+  const activeOperationalLogs = filterOperationalLogsByScope(rawActiveOperationalLogs, user);
+  const allOperationalLogs = filterOperationalLogsByScope(rawOperationalLogs, user);
 
   // Financial calculations
   let realisasiPAD = 0;
@@ -369,6 +383,7 @@ exports.getDinasDashboardStats = async () => {
   const overdueList = [];
 
   let realisasiHanggar = 0;
+  let realisasiApron = 0;
   let realisasiRuangan = 0;
   let realisasiDenda = 0;
 
@@ -376,14 +391,28 @@ exports.getDinasDashboardStats = async () => {
     const amt = Number(inv.amount || 0);
     const penalty = Number(inv.penalty_amount || 0);
     const s = (inv.status || '').toLowerCase();
-    const isHanggar = (inv.service_category || '').toUpperCase() === 'HANGGAR' || (inv.account_code || '').includes('4.1.2.02.02');
-    const isRuang = (inv.service_category || '').toUpperCase() === 'RUANGAN' || (inv.account_code || '').includes('4.1.2.02.01');
+    
+    const invType = (inv.invoice_type || '').toLowerCase();
+    const invNum = (inv.invoice_number || '').toUpperCase();
+    const assetJenis = (inv.contracts?.assets?.jenis_aset || '').toLowerCase();
+    const assetNama = (inv.contracts?.assets?.nama_aset || '').toLowerCase();
+    const isApron = (inv.service_category || '').toUpperCase() === 'APRON' || 
+                    (inv.account_code || '').includes('4.1.2.02.03') ||
+                    invType.includes('apron') ||
+                    invNum.includes('APRN') ||
+                    invNum.includes('APN') ||
+                    assetJenis === 'apron' ||
+                    (assetNama.includes('apron') && !assetNama.includes('hanggar'));
+
+    const isHanggar = !isApron && ((inv.service_category || '').toUpperCase() === 'HANGGAR' || (inv.account_code || '').includes('4.1.2.02.02') || invType.includes('hanggar') || invNum.includes('HGR'));
+    const isRuang = (inv.service_category || '').toUpperCase() === 'RUANGAN' || (inv.account_code || '').includes('4.1.2.02.01') || invType.includes('ruang');
     const isDenda = (inv.service_category || '').toUpperCase() === 'DENDA' || (inv.account_code || '').includes('4.1.4.01.01');
 
     if (s === 'paid' || s === 'lunas') {
       realisasiPAD += (amt + penalty);
       paidCount++;
-      if (isHanggar) realisasiHanggar += amt;
+      if (isApron) realisasiApron += amt;
+      else if (isHanggar) realisasiHanggar += amt;
       else if (isRuang) realisasiRuangan += amt;
       else realisasiHanggar += amt;
       realisasiDenda += penalty;
@@ -475,6 +504,7 @@ exports.getDinasDashboardStats = async () => {
     top_overdue_invoices: overdueList.slice(0, 5),
     revenue_breakdown: {
       hanggar: realisasiHanggar,
+      apron: realisasiApron,
       ruangan: realisasiRuangan,
       denda: realisasiDenda,
       total: realisasiPAD

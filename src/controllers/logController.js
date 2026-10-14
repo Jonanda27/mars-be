@@ -48,6 +48,7 @@ exports.emergencyCheckin = async (req, res, next) => {
 };
 
 const logService = require('../services/logService');
+const { filterOperationalLogsByScope } = require('../utils/adminScope');
 
 // Create new log entry (pesawat masuk)
 exports.createLogEntry = async (req, res, next) => {
@@ -99,7 +100,8 @@ exports.updateLogExit = async (req, res, next) => {
 exports.getAllLogs = async (req, res, next) => {
   try {
     const logs = await logService.getAllLogs();
-    res.status(200).json({ success: true, data: logs });
+    const scopedLogs = filterOperationalLogsByScope(logs, req.user);
+    res.status(200).json({ success: true, data: scopedLogs });
   } catch (error) {
     next(error);
   }
@@ -108,7 +110,8 @@ exports.getAllLogs = async (req, res, next) => {
 exports.getActiveLogs = async (req, res, next) => {
   try {
     const logs = await logService.getActiveLogs();
-    res.status(200).json({ success: true, data: logs });
+    const scopedLogs = filterOperationalLogsByScope(logs, req.user);
+    res.status(200).json({ success: true, data: scopedLogs });
   } catch (error) {
     next(error);
   }
@@ -117,7 +120,8 @@ exports.getActiveLogs = async (req, res, next) => {
 exports.getOverstayLogs = async (req, res, next) => {
   try {
     const logs = await logService.getOverstayLogs();
-    res.status(200).json({ success: true, data: logs });
+    const scopedLogs = filterOperationalLogsByScope(logs, req.user);
+    res.status(200).json({ success: true, data: scopedLogs });
   } catch (error) {
     next(error);
   }

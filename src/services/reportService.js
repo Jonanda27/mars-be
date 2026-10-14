@@ -1,4 +1,5 @@
 const prisma = require('../config/db');
+const { filterInvoicesByScope } = require('../utils/adminScope');
 
 /**
  * Helper to compute date range from period filters
@@ -105,9 +106,64 @@ function classifyInvoice(inv) {
     };
   }
 
+  // Identifikasi apakah pemakaian ini spesifik untuk Apron
+  const invType = (inv.invoice_type || '').toLowerCase();
+  const invNum = (inv.invoice_number || '').toUpperCase();
+  const assetJenis = (inv.contracts?.assets?.jenis_aset || '').toLowerCase();
+  const assetNama = (inv.contracts?.assets?.nama_aset || '').toLowerCase();
+
+  let hasApronLog = false;
+  let hasHanggarLog = false;
+  if (Array.isArray(inv.operational_logs) && inv.operational_logs.length > 0) {
+    hasApronLog = inv.operational_logs.some(l => (l.parking_location || '').toLowerCase().includes('apron'));
+    hasHanggarLog = inv.operational_logs.some(l => (l.parking_location || '').toLowerCase().includes('hanggar'));
+  }
+
+  let detailsHasApron = false;
+  let detailsHasHanggar = false;
+  if (inv.details) {
+    if (Array.isArray(inv.details)) {
+      for (const item of inv.details) {
+        const itemStr = JSON.stringify(item).toLowerCase();
+        if (itemStr.includes('trf-apron') || itemStr.includes('parkir apron') || item.parking_location === 'Apron' || (item.parking_location || '').toLowerCase().includes('apron')) {
+          detailsHasApron = true;
+        }
+        if (itemStr.includes('trf-hgr') || itemStr.includes('hanggar') || (item.parking_location || '').toLowerCase().includes('hanggar')) {
+          detailsHasHanggar = true;
+        }
+      }
+    } else {
+      const dStr = JSON.stringify(inv.details).toLowerCase();
+      if (dStr.includes('trf-apron') || dStr.includes('parkir apron') || dStr.includes('"apron"')) {
+        detailsHasApron = true;
+      }
+      if (dStr.includes('trf-hgr') || dStr.includes('"hanggar"')) {
+        detailsHasHanggar = true;
+      }
+    }
+  }
+
+  const isApron = Boolean(
+    invType.includes('apron') ||
+    invNum.includes('APRN') ||
+    invNum.includes('APN') ||
+    assetJenis === 'apron' ||
+    (assetNama.includes('apron') && !assetNama.includes('hanggar')) ||
+    (hasApronLog && !hasHanggarLog) ||
+    (detailsHasApron && !detailsHasHanggar)
+  );
+
+  if (isApron) {
+    return {
+      account_code: '4.1.2.02.03',
+      account_name: 'Retribusi Sewa Apron Pesawat',
+      service_category: 'APRON'
+    };
+  }
+
   return {
     account_code: '4.1.2.02.02',
-    account_name: 'Retribusi Sewa Hanggar & Apron Pesawat',
+    account_name: 'Retribusi Sewa Hanggar Pesawat',
     service_category: 'HANGGAR'
   };
 }
@@ -115,7 +171,7 @@ function classifyInvoice(inv) {
 /**
  * Menghasilkan Laporan Rekapitulasi Realisasi Penerimaan Retribusi Daerah (Slide 6 & 7 PPT)
  */
-exports.getRetributionReport = async (queryParams) => {
+exports.getRetributionReport = async (queryParams, user = null) => {
   const { startDate, endDate, periodLabel, year } = resolveDateRange(queryParams);
 
   // Ambil semua invoice yang relevan:
@@ -152,8 +208,11 @@ exports.getRetributionReport = async (queryParams) => {
     }
   });
 
+  // Terapkan scope filtering berdasarkan peran admin (Hanggar, Apron, Ruangan, Mini Airport, Global)
+  const scopedInvoices = filterInvoicesByScope(invoices, user);
+
   // Filter optional: service_type, tenant_id, status
-  const filteredInvoices = invoices.filter((inv) => {
+  const filteredInvoices = scopedInvoices.filter((inv) => {
     const classification = classifyInvoice(inv);
 
     // Filter service_type: 'ALL' | 'HANGGAR' | 'RUANGAN' | 'DENDA'
@@ -196,7 +255,19 @@ exports.getRetributionReport = async (queryParams) => {
     },
     '4.1.2.02.02': {
       account_code: '4.1.2.02.02',
-      account_name: 'Retribusi Sewa Hanggar & Apron Pesawat',
+      account_name: 'Retribusi Sewa Hanggar Pesawat',
+      realisasi_pokok: 0,
+      realisasi_denda: 0,
+      total_realisasi: 0,
+      piutang_menunggak: 0,
+      total_ketetapan_terbit: 0,
+      jumlah_skrd_lunas: 0,
+      jumlah_skrd_piutang: 0,
+      jumlah_skrd_batal: 0
+    },
+    '4.1.2.02.03': {
+      account_code: '4.1.2.02.03',
+      account_name: 'Retribusi Sewa Apron Pesawat',
       realisasi_pokok: 0,
       realisasi_denda: 0,
       total_realisasi: 0,
@@ -247,7 +318,7 @@ exports.getRetributionReport = async (queryParams) => {
 
     const acc = accountSummaryMap[classification.account_code];
 
-    if (isPaidInPeriod) {
+    if (isPaidInPeriod && acc) {
       if (classification.account_code === '4.1.4.01.01') {
         // SKRD Denda murni
         acc.realisasi_denda += amount;
@@ -271,16 +342,18 @@ exports.getRetributionReport = async (queryParams) => {
 
     if (isCreatedInPeriod) {
       if (!isCancelled) {
-        acc.total_ketetapan_terbit += totalAmount;
+        if (acc) acc.total_ketetapan_terbit += totalAmount;
         grandTotalKetetapan += totalAmount;
 
         if (isUnpaid) {
-          acc.piutang_menunggak += totalAmount;
+          if (acc) {
+            acc.piutang_menunggak += totalAmount;
+            acc.jumlah_skrd_piutang += 1;
+          }
           grandTotalPiutang += totalAmount;
-          acc.jumlah_skrd_piutang += 1;
         }
       } else {
-        acc.jumlah_skrd_batal += 1;
+        if (acc) acc.jumlah_skrd_batal += 1;
       }
     }
 
@@ -292,7 +365,12 @@ exports.getRetributionReport = async (queryParams) => {
       service_category: classification.service_category,
       tenant_name: inv.tenants?.nama_perusahaan || 'Tenant Umum',
       contract_number: inv.contracts?.contract_number || null,
-      asset_name: inv.contracts?.assets?.nama_aset || (classification.service_category === 'HANGGAR' ? 'Hanggar & Apron' : 'Sewa Ruangan'),
+      asset_name: inv.contracts?.assets?.nama_aset || (
+        classification.service_category === 'APRON' ? 'Apron Mozes Kilangin' :
+        classification.service_category === 'HANGGAR' ? 'Hanggar Mozes Kilangin' :
+        classification.service_category === 'DENDA' ? 'Sanksi Denda Keterlambatan' :
+        'Sewa Ruangan'
+      ),
       amount,
       penalty_amount: penaltyAmount,
       total_amount: totalAmount,
