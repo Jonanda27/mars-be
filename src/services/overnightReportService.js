@@ -52,7 +52,7 @@ exports.getTodayDraftRoster = async (reportDateStr) => {
       aircraft_type: aircraftType || 'Pesawat Operasional',
       is_adhoc: false,
       is_staying: true, // Default checked for active in-hangar planes
-      initial_evidence_photo: log.evidence_photo || null
+      initial_evidence_photo: null
     };
   });
 

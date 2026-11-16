@@ -67,7 +67,7 @@ exports.registerTenant = async (data) => {
       data: {
         username,
         password_hash,
-        role: 'Tenant',
+        role: 'tenant',
       }
     });
 
@@ -98,7 +98,9 @@ exports.loginUser = async (username, password) => {
   const user = await prisma.users.findUnique({
     where: { username },
     include: {
-      tenants: true
+      tenants: true,
+      airports: true,
+      mini_airports: true,
     }
   });
 
@@ -122,6 +124,10 @@ exports.loginUser = async (username, password) => {
     username: user.username,
     role: user.role,
     airport_id: user.airport_id,
+    mini_airport_id: user.mini_airport_id,
+    airport_name: user.mini_airports ? user.mini_airports.nama_bandara : (user.airports ? user.airports.nama_bandara : null),
+    airport_code: user.mini_airports ? user.mini_airports.kode_bandara : (user.airports ? user.airports.kode_bandara : null),
+    airport_type: user.mini_airport_id ? 'mini' : (user.airport_id ? 'main' : null),
     tenant_id: tenantData ? tenantData.id : null,
     tenant_id_str: tenantData ? tenantData.tenant_id_str : null,
     nama_perusahaan: tenantData ? tenantData.nama_perusahaan : null,
@@ -138,7 +144,9 @@ exports.getUserProfile = async (userId) => {
   const user = await prisma.users.findUnique({
     where: { id: userId },
     include: {
-      tenants: true
+      tenants: true,
+      airports: true,
+      mini_airports: true,
     }
   });
 
@@ -155,6 +163,10 @@ exports.getUserProfile = async (userId) => {
     username: user.username,
     role: user.role,
     airport_id: user.airport_id,
+    mini_airport_id: user.mini_airport_id,
+    airport_name: user.mini_airports ? user.mini_airports.nama_bandara : (user.airports ? user.airports.nama_bandara : null),
+    airport_code: user.mini_airports ? user.mini_airports.kode_bandara : (user.airports ? user.airports.kode_bandara : null),
+    airport_type: user.mini_airport_id ? 'mini' : (user.airport_id ? 'main' : null),
     tenant_id: tenantData ? tenantData.id : null,
     tenant_id_str: tenantData ? tenantData.tenant_id_str : null,
     nama_perusahaan: tenantData ? tenantData.nama_perusahaan : null,

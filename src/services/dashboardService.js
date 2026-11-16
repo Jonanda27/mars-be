@@ -1,11 +1,28 @@
 const prisma = require('../config/db');
+const { 
+  filterInvoicesByScope, 
+  filterContractsByScope, 
+  filterAssetsByScope, 
+  filterOperationalLogsByScope,
+  getAdminScope 
+} = require('../utils/adminScope');
 
-exports.getAdminDashboardStats = async () => {
+exports.getAdminDashboardStats = async (user = null) => {
   const now = new Date();
   const currentYear = now.getFullYear();
 
   // 1. FINANSIAL METRICS
-  const [allInvoices, allTenants, allContracts, allAssets, unbilledLogsCount, pendingSchedulesCount] = await Promise.all([
+  const [
+    rawInvoices, 
+    allTenants, 
+    rawContracts, 
+    rawAssets, 
+    unbilledLogsCount, 
+    pendingSchedulesCount,
+    rawActiveOperationalLogs,
+    allAircrafts,
+    rawOperationalLogs
+  ] = await Promise.all([
     prisma.invoices.findMany({
       include: {
         tenants: true,
@@ -41,8 +58,25 @@ exports.getAdminDashboardStats = async () => {
     }),
     prisma.flight_schedules.count({
       where: { status: 'Pending' }
+    }),
+    prisma.operational_logs.findMany({
+      where: { exit_time: null },
+      include: { tenants: true }
+    }),
+    prisma.aircrafts.findMany({
+      include: { aircraft_types: true }
+    }),
+    prisma.operational_logs.findMany({
+      orderBy: { entry_time: 'desc' }
     })
   ]);
+
+  // Terapkan scope filtering berdasarkan peran admin
+  const allInvoices = filterInvoicesByScope(rawInvoices, user);
+  const allContracts = filterContractsByScope(rawContracts, user);
+  const allAssets = filterAssetsByScope(rawAssets, user);
+  const activeOperationalLogs = filterOperationalLogsByScope(rawActiveOperationalLogs, user);
+  const allOperationalLogs = filterOperationalLogsByScope(rawOperationalLogs, user);
 
   // Financial calculations
   let realisasiPAD = 0;
@@ -124,26 +158,88 @@ exports.getAdminDashboardStats = async () => {
   let totalAreaAll = 0;
   let totalAreaUsed = 0;
 
+  const activeAircraftRegs = new Set(
+    (activeOperationalLogs || []).map(l => (l.registration_number || '').toUpperCase().trim()).filter(Boolean)
+  );
+
+  const allLogsByReg = {};
+  (allOperationalLogs || []).forEach(l => {
+    const reg = (l.registration_number || '').toUpperCase().trim();
+    if (reg) {
+      if (!allLogsByReg[reg]) allLogsByReg[reg] = [];
+      allLogsByReg[reg].push(l);
+    }
+  });
+
   const visualAssets = allAssets.map(asset => {
     const totalLuas = Number(asset.luas || 0);
     totalAreaAll += totalLuas;
 
-    const isHanggar = asset.jenis_aset === 'Hanggar' || (asset.kategori || '').toLowerCase().includes('hanggar');
+    const isAviationFacility = asset.jenis_aset === 'Hanggar' || 
+                               asset.jenis_aset === 'Apron' ||
+                               (asset.kategori || '').toLowerCase().includes('hanggar') || 
+                               (asset.kategori || '').toLowerCase().includes('apron');
     
-    if (isHanggar) {
+    if (isAviationFacility) {
       // Hitung luas terpakai dari armada yang terparkir / terhubung
       let usedArea = 0;
-      const parkedAircrafts = [];
+      const parkedAircraftsMap = new Map();
 
-      (asset.aircrafts || []).forEach(ac => {
-        const acArea = Number(ac.aircraft_types?.luas_efektif_m2 || 0);
-        usedArea += acArea;
-        parkedAircrafts.push({
-          id: ac.id,
-          registration_number: ac.registration_number,
-          aircraft_type: ac.aircraft_types?.tipe_pesawat || ac.aircraft_types?.jenis_pesawat || 'Standar',
-          effective_area: acArea
+      // 1. Dari active operational_logs (pesawat yang saat ini check-in fisik di lapangan dan belum checkout)
+      const matchingActiveLogs = (activeOperationalLogs || []).filter(log => {
+        if (log.asset_id && log.asset_id === asset.id) return true;
+        const parkLoc = (log.parking_location || '').toLowerCase();
+        const assetName = (asset.nama_aset || '').toLowerCase();
+        const assetJenis = (asset.jenis_aset || '').toLowerCase();
+        return parkLoc.includes(assetJenis) || assetName.includes(parkLoc);
+      });
+
+      matchingActiveLogs.forEach(log => {
+        const reg = (log.registration_number || '').toUpperCase().trim();
+        if (!reg) return;
+
+        const matchingAc = (allAircrafts || []).find(a => (a.registration_number || '').toUpperCase() === reg);
+        const acType = matchingAc?.aircraft_types?.jenis_pesawat || log.aircraft_type || 'Pesawat Standar';
+        const acArea = Number(matchingAc?.aircraft_types?.luas_efektif_m2 || 200);
+
+        parkedAircraftsMap.set(reg, {
+          id: `log-${log.id}`,
+          registration_number: reg,
+          aircraft_type: acType,
+          effective_area: acArea,
+          operator: log.tenants?.nama_perusahaan || matchingAc?.operator || '-'
         });
+      });
+
+      // 2. Dari asset.aircrafts (armada yang terdaftar menempati aset, asalkan belum checkout dari log dan tidak aktif di lokasi lain)
+      (asset.aircrafts || []).forEach(ac => {
+        const reg = (ac.registration_number || '').toUpperCase().trim();
+        if (!reg) return;
+
+        // Jika pesawat sedang aktif di log lokasi lain, jangan masukkan ke aset ini
+        if (activeAircraftRegs.has(reg) && !matchingActiveLogs.some(l => (l.registration_number || '').toUpperCase() === reg)) {
+          return;
+        }
+
+        const acLogs = allLogsByReg[reg] || [];
+        const latestLog = acLogs[0];
+        const isCurrentlyExited = latestLog && latestLog.exit_time !== null && !matchingActiveLogs.some(l => (l.registration_number || '').toUpperCase() === reg);
+
+        if (!isCurrentlyExited && !parkedAircraftsMap.has(reg)) {
+          const acArea = Number(ac.aircraft_types?.luas_efektif_m2 || 200);
+          parkedAircraftsMap.set(reg, {
+            id: `ac-${ac.id}`,
+            registration_number: reg,
+            aircraft_type: ac.aircraft_types?.jenis_pesawat || ac.aircraft_types?.tipe_pesawat || 'Standar',
+            effective_area: acArea,
+            operator: ac.operator || '-'
+          });
+        }
+      });
+
+      const parkedAircrafts = Array.from(parkedAircraftsMap.values());
+      parkedAircrafts.forEach(p => {
+        usedArea += p.effective_area;
       });
 
       const remainingArea = Math.max(0, totalLuas - usedArea);
@@ -158,7 +254,7 @@ exports.getAdminDashboardStats = async () => {
         kode_aset: asset.kode_aset,
         nama_aset: asset.nama_aset,
         jenis_aset: asset.jenis_aset,
-        lokasi: asset.lokasi || 'Sisi Utara Runway',
+        lokasi: asset.lokasi || (asset.jenis_aset === 'Apron' ? 'Airside Bandara Mozes Kilangin' : 'Sisi Utara Runway'),
         luas_total: totalLuas,
         luas_terpakai: usedArea,
         sisa_luas: remainingArea,
@@ -287,6 +383,7 @@ exports.getDinasDashboardStats = async () => {
   const overdueList = [];
 
   let realisasiHanggar = 0;
+  let realisasiApron = 0;
   let realisasiRuangan = 0;
   let realisasiDenda = 0;
 
@@ -294,14 +391,28 @@ exports.getDinasDashboardStats = async () => {
     const amt = Number(inv.amount || 0);
     const penalty = Number(inv.penalty_amount || 0);
     const s = (inv.status || '').toLowerCase();
-    const isHanggar = (inv.service_category || '').toUpperCase() === 'HANGGAR' || (inv.account_code || '').includes('4.1.2.02.02');
-    const isRuang = (inv.service_category || '').toUpperCase() === 'RUANGAN' || (inv.account_code || '').includes('4.1.2.02.01');
+    
+    const invType = (inv.invoice_type || '').toLowerCase();
+    const invNum = (inv.invoice_number || '').toUpperCase();
+    const assetJenis = (inv.contracts?.assets?.jenis_aset || '').toLowerCase();
+    const assetNama = (inv.contracts?.assets?.nama_aset || '').toLowerCase();
+    const isApron = (inv.service_category || '').toUpperCase() === 'APRON' || 
+                    (inv.account_code || '').includes('4.1.2.02.03') ||
+                    invType.includes('apron') ||
+                    invNum.includes('APRN') ||
+                    invNum.includes('APN') ||
+                    assetJenis === 'apron' ||
+                    (assetNama.includes('apron') && !assetNama.includes('hanggar'));
+
+    const isHanggar = !isApron && ((inv.service_category || '').toUpperCase() === 'HANGGAR' || (inv.account_code || '').includes('4.1.2.02.02') || invType.includes('hanggar') || invNum.includes('HGR'));
+    const isRuang = (inv.service_category || '').toUpperCase() === 'RUANGAN' || (inv.account_code || '').includes('4.1.2.02.01') || invType.includes('ruang');
     const isDenda = (inv.service_category || '').toUpperCase() === 'DENDA' || (inv.account_code || '').includes('4.1.4.01.01');
 
     if (s === 'paid' || s === 'lunas') {
       realisasiPAD += (amt + penalty);
       paidCount++;
-      if (isHanggar) realisasiHanggar += amt;
+      if (isApron) realisasiApron += amt;
+      else if (isHanggar) realisasiHanggar += amt;
       else if (isRuang) realisasiRuangan += amt;
       else realisasiHanggar += amt;
       realisasiDenda += penalty;
@@ -393,6 +504,7 @@ exports.getDinasDashboardStats = async () => {
     top_overdue_invoices: overdueList.slice(0, 5),
     revenue_breakdown: {
       hanggar: realisasiHanggar,
+      apron: realisasiApron,
       ruangan: realisasiRuangan,
       denda: realisasiDenda,
       total: realisasiPAD

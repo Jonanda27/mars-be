@@ -37,6 +37,7 @@ model aircraft_types {
   
   aircrafts        aircrafts[]
   master_tariffs   master_tariffs[] // Back-relation: satu tipe pesawat bisa punya 1 tarif
+  master_taxes     master_taxes[]
 }
 
 model airports {
@@ -53,6 +54,18 @@ model airports {
   assets          assets[]
   ticket_books    parking_ticket_books[]
   handovers       parking_warden_handovers[]
+}
+
+model mini_airports {
+  id              Int       @id @default(autoincrement())
+  kode_bandara    String    @unique @db.VarChar(50)
+  nama_bandara    String    @db.VarChar(150)
+  lokasi          String?   @db.VarChar(150)
+  deskripsi       String?   @db.Text
+  created_at      DateTime? @default(now()) @db.Timestamp(6)
+  updated_at      DateTime? @default(now()) @db.Timestamp(6)
+
+  users           users[]
 }
 
 model zones {
@@ -137,16 +150,19 @@ model users {
   id                Int       @id @default(autoincrement())
   username          String    @unique @db.VarChar(50)
   password_hash     String    @db.VarChar(255)
-  role              String    @db.VarChar(20)
+  role              String    @db.VarChar(50)
   airport_id        Int?
+  mini_airport_id   Int?
   created_at        DateTime? @default(now()) @db.Timestamp(6)
   
-  airports          airports? @relation(fields: [airport_id], references: [id], onDelete: SetNull)
+  airports          airports?       @relation(fields: [airport_id], references: [id], onDelete: SetNull)
+  mini_airports     mini_airports?  @relation(fields: [mini_airport_id], references: [id], onDelete: SetNull)
   tenants           tenants[]
   logged_operations operational_logs[]
   notifications     notifications[]
   overnight_reports daily_overnight_reports[]
   verified_schedules flight_schedules[]
+  verified_payments invoice_payments[]
 }
 
 model rental_applications {
@@ -226,6 +242,25 @@ model master_tariffs {
   aircraft_types   aircraft_types? @relation(fields: [aircraft_type_id], references: [id], onDelete: SetNull)
 }
 
+model master_taxes {
+  id               Int       @id @default(autoincrement())
+  kode_tax         String    @unique @db.VarChar(50)
+  nama_tax         String    @db.VarChar(150)
+  kategori         String    @db.VarChar(100) // 'Pendaratan', 'Penumpang', 'Parkir', 'Nginap', 'Airport'
+  aircraft_type_id Int?
+  satuan           String    @db.VarChar(50)
+  tarif            Decimal   @db.Decimal(15, 2)
+  tipe_tarif       String?   @default("Fixed") @db.VarChar(50) // 'Fixed' | 'Persentase'
+  persentase       Decimal?  @db.Decimal(5, 2)
+  dasar_hukum      String?   @db.VarChar(255)
+  deskripsi        String?   @db.Text
+  status           String?   @default("Active") @db.VarChar(50)
+  created_at       DateTime? @default(now()) @db.Timestamp(6)
+  updated_at       DateTime? @default(now()) @db.Timestamp(6)
+
+  aircraft_types   aircraft_types? @relation(fields: [aircraft_type_id], references: [id], onDelete: SetNull)
+}
+
 model invoices {
   id                  Int       @id @default(autoincrement())
   invoice_number      String    @unique @db.VarChar(50)
@@ -233,12 +268,14 @@ model invoices {
   tenant_id           Int
   invoice_type        String?   @default("Sewa Hanggar") @db.VarChar(50) // 'Sewa Ruangan' | 'Sewa Hanggar' | 'SKRD Denda' | 'SKRD Overstay'
   amount              Decimal   @db.Decimal(15, 2)
+  paid_amount         Decimal?  @default(0) @db.Decimal(15, 2)
   penalty_amount      Decimal?  @default(0) @db.Decimal(15, 2)
   due_date            DateTime? @db.Date
-  status              String?   @default("Unpaid") @db.VarChar(50)
+  status              String?   @default("Unpaid") @db.VarChar(50) // 'Unpaid' | 'Pending Verification' | 'Partially Paid' | 'Paid' | 'Overdue' | 'Cancelled'
   payment_method      String?   @db.VarChar(100)
   payment_receipt     String?   @db.VarChar(255)
   payment_date        DateTime? @db.Timestamp(6)
+  payment_history     Json?     // Ringkasan log pembayaran bertahap
   details             Json?     // Rincian rincian pemakaian armada: [{ registration_number, aircraft_type, entry_time, exit_time, total_nights, rate_per_night, subtotal, log_id }]
   created_at          DateTime? @default(now()) @db.Timestamp(6)
   updated_at          DateTime? @default(now()) @db.Timestamp(6)
@@ -247,6 +284,7 @@ model invoices {
   tenants             tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   warnings            warnings[]
   operational_logs    operational_logs[]
+  invoice_payments    invoice_payments[]
 }
 
 model warnings {
@@ -261,6 +299,26 @@ model warnings {
   
   tenants        tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   invoices       invoices? @relation(fields: [invoice_id], references: [id], onDelete: SetNull)
+}
+
+model invoice_payments {
+  id              Int       @id @default(autoincrement())
+  invoice_id      Int
+  amount          Decimal   @db.Decimal(15, 2)
+  payment_method  String?   @db.VarChar(100)
+  payment_receipt String?   @db.VarChar(255)
+  payment_date    DateTime? @default(now()) @db.Timestamp(6)
+  status          String    @default("Pending") @db.VarChar(50) // 'Pending' | 'Verified' | 'Rejected'
+  ocr_status      String?   @default("Pending") @db.VarChar(50) // 'Pending' | 'Success' | 'Failed' | 'Skipped'
+  ocr_data        Json?     // Hasil analisis ekstraksi AI OpenAI: amount_detected, sender_name, bank, ref, dll
+  verified_by_id  Int?
+  verified_at     DateTime? @db.Timestamp(6)
+  notes           String?   @db.Text
+  created_at      DateTime? @default(now()) @db.Timestamp(6)
+  updated_at      DateTime? @default(now()) @db.Timestamp(6)
+
+  invoice         invoices  @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
+  verified_by     users?    @relation(fields: [verified_by_id], references: [id], onDelete: SetNull)
 }
 
 // =========================================================================

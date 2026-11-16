@@ -1,7 +1,11 @@
 const prisma = require('../config/db');
+const crypto = require('crypto');
+const emailService = require('./emailService');
+const aiVisionService = require('./aiVisionService');
+const { filterInvoicesByScope } = require('../utils/adminScope');
 
-exports.getAllInvoices = async () => {
-  return await prisma.invoices.findMany({
+exports.getAllInvoices = async (user = null) => {
+  const allInvoices = await prisma.invoices.findMany({
     include: {
       contracts: {
         include: {
@@ -12,12 +16,24 @@ exports.getAllInvoices = async () => {
         }
       },
       tenants: true,
-      operational_logs: true
+      operational_logs: true,
+      warnings: {
+        orderBy: {
+          created_at: 'desc'
+        }
+      },
+      invoice_payments: {
+        orderBy: {
+          created_at: 'desc'
+        }
+      }
     },
     orderBy: {
       created_at: 'desc'
     }
   });
+
+  return filterInvoicesByScope(allInvoices, user);
 };
 
 exports.getTenantInvoices = async (tenantId) => {
@@ -33,7 +49,17 @@ exports.getTenantInvoices = async (tenantId) => {
         }
       },
       tenants: true,
-      operational_logs: true
+      operational_logs: true,
+      warnings: {
+        orderBy: {
+          created_at: 'desc'
+        }
+      },
+      invoice_payments: {
+        orderBy: {
+          created_at: 'desc'
+        }
+      }
     },
     orderBy: {
       created_at: 'desc'
@@ -54,7 +80,17 @@ exports.getInvoiceById = async (id) => {
         }
       },
       tenants: true,
-      operational_logs: true
+      operational_logs: true,
+      warnings: {
+        orderBy: {
+          created_at: 'desc'
+        }
+      },
+      invoice_payments: {
+        orderBy: {
+          created_at: 'desc'
+        }
+      }
     }
   });
 };
@@ -252,53 +288,267 @@ exports.generateInvoice = async (contractId, isPeriodic = false) => {
   return await createSingleInvoice(contract, year, month, isPeriodic);
 };
 
-exports.uploadReceipt = async (id, filename, method) => {
+exports.uploadReceipt = async (id, filename, method, amount = null, notes = null) => {
+  const invoiceId = Number.parseInt(id, 10);
+  const invoice = await prisma.invoices.findUnique({
+    where: { id: invoiceId }
+  });
+
+  if (!invoice) {
+    throw new Error('Tagihan tidak ditemukan');
+  }
+
+  const currentPaid = Number(invoice.paid_amount || 0);
+  const totalDue = Number(invoice.amount) + Number(invoice.penalty_amount || 0);
+  const remainingDue = Math.max(0, totalDue - currentPaid);
+
+  // Jalankan analisis cerdas AI Vision untuk membaca bukti transfer / STS
+  let ocrData = null;
+  let ocrStatus = 'Pending';
+  try {
+    const aiAnalysis = await aiVisionService.analyzePaymentReceipt(filename);
+    if (aiAnalysis && aiAnalysis.status === 'Success' && aiAnalysis.data) {
+      ocrData = aiAnalysis.data;
+      ocrStatus = 'Success';
+    } else if (aiAnalysis && aiAnalysis.status === 'Skipped') {
+      ocrStatus = 'Skipped';
+      ocrData = { notes: aiAnalysis.message };
+    } else if (aiAnalysis && aiAnalysis.status === 'Failed') {
+      ocrStatus = 'Failed';
+      ocrData = { notes: aiAnalysis.message };
+    }
+  } catch (ocrErr) {
+    console.error('AI Vision error on uploadReceipt:', ocrErr);
+    ocrStatus = 'Failed';
+    ocrData = { notes: ocrErr.message };
+  }
+
+  // Tentukan nominal setoran:
+  // Prioritas 1: Nominal manual jika dikirim
+  // Prioritas 2: Nominal hasil deteksi AI
+  // Prioritas 3: Sisa tagihan (remainingDue)
+  const detectedAmount = ocrData?.amount_detected && Number(ocrData.amount_detected) > 0
+    ? Number(ocrData.amount_detected)
+    : null;
+
+  const paymentAmount = amount && Number(amount) > 0
+    ? Number(amount)
+    : (detectedAmount || remainingDue);
+
+  // Catat pembayaran baru di tabel invoice_payments lengkap dengan data AI Vision
+  await prisma.invoice_payments.create({
+    data: {
+      invoice_id: invoiceId,
+      amount: paymentAmount,
+      payment_method: method || (ocrData?.sender_bank ? `Transfer via ${ocrData.sender_bank}` : 'Bank Papua - Rekening Kas Daerah'),
+      payment_receipt: filename,
+      status: 'Pending',
+      ocr_status: ocrStatus,
+      ocr_data: ocrData,
+      notes: notes || (ocrData?.notes ? ocrData.notes : `Penyetoran bukti transfer senilai Rp${paymentAmount.toLocaleString('id-ID')}`)
+    }
+  });
+
   return await prisma.invoices.update({
-    where: { id: Number.parseInt(id, 10) },
+    where: { id: invoiceId },
     data: {
       status: 'Pending Verification',
       payment_receipt: filename,
-      payment_method: method
+      payment_method: method || (ocrData?.sender_bank ? `Transfer ${ocrData.sender_bank}` : invoice.payment_method)
+    },
+    include: {
+      invoice_payments: {
+        orderBy: { created_at: 'desc' }
+      }
     }
   });
 };
 
-exports.verifyPayment = async (id) => {
-  const invoice = await prisma.invoices.update({
-    where: { id: Number.parseInt(id, 10) },
-    data: {
-      status: 'Paid',
-      payment_date: new Date()
+exports.verifyPayment = async (id, payload = {}, verifierId = null) => {
+  const invoiceId = Number.parseInt(id, 10);
+  const invoice = await prisma.invoices.findUnique({
+    where: { id: invoiceId },
+    include: {
+      invoice_payments: {
+        where: { status: 'Pending' },
+        orderBy: { created_at: 'desc' },
+        take: 1
+      },
+      warnings: true
     }
   });
 
-  // Activate contract when paid
-  const updatedContract = await prisma.contracts.update({
-    where: { id: invoice.contract_id },
+  if (!invoice) {
+    throw new Error('Tagihan tidak ditemukan');
+  }
+
+  const pendingPayment = invoice.invoice_payments?.[0];
+  const oldPaid = Number(invoice.paid_amount || 0);
+  const totalObligation = Number(invoice.amount) + Number(invoice.penalty_amount || 0);
+
+  // Ambil nominal yang dibayarkan pada transaksi ini
+  const paymentAmount = payload.amount_paid !== undefined && payload.amount_paid !== null && Number(payload.amount_paid) > 0
+    ? Number(payload.amount_paid)
+    : (pendingPayment ? Number(pendingPayment.amount) : Math.max(0, totalObligation - oldPaid));
+
+  const newPaidAmount = oldPaid + paymentAmount;
+  const remainingObligation = Math.max(0, totalObligation - newPaidAmount);
+
+  // Update status payment di invoice_payments
+  if (pendingPayment) {
+    await prisma.invoice_payments.update({
+      where: { id: pendingPayment.id },
+      data: {
+        amount: paymentAmount,
+        status: 'Verified',
+        verified_by_id: verifierId ? Number(verifierId) : null,
+        verified_at: new Date(),
+        notes: payload.notes || pendingPayment.notes
+      }
+    });
+  } else {
+    await prisma.invoice_payments.create({
+      data: {
+        invoice_id: invoiceId,
+        amount: paymentAmount,
+        payment_method: payload.payment_method || invoice.payment_method || 'Kas Daerah',
+        payment_receipt: invoice.payment_receipt,
+        status: 'Verified',
+        verified_by_id: verifierId ? Number(verifierId) : null,
+        verified_at: new Date(),
+        notes: payload.notes || 'Pembayaran diverifikasi langsung oleh petugas dinas'
+      }
+    });
+  }
+
+  // Tentukan status akhir invoice sesuai Perbup Mimika 25/2024:
+  const isFullyPaid = remainingObligation <= 0;
+  const newStatus = isFullyPaid ? 'Paid' : 'Partially Paid';
+
+  const updatedInvoice = await prisma.invoices.update({
+    where: { id: invoiceId },
     data: {
-      status: 'Active'
+      status: newStatus,
+      paid_amount: newPaidAmount,
+      payment_date: new Date(),
+      payment_method: payload.payment_method || invoice.payment_method
     },
     include: {
-      rental_applications: true
+      invoice_payments: {
+        orderBy: { created_at: 'desc' }
+      },
+      warnings: true,
+      contracts: true,
+      tenants: true
     }
   });
 
-  // Link aircrafts to the asset if applicable
-  if (updatedContract.rental_applications?.specific_needs) {
-    const specificNeeds = updatedContract.rental_applications.specific_needs;
-    if (Array.isArray(specificNeeds.aircraft_ids) && specificNeeds.aircraft_ids.length > 0) {
-      const aircraftIds = specificNeeds.aircraft_ids.map(aid => Number.parseInt(aid, 10));
-      await prisma.aircrafts.updateMany({
-        where: { id: { in: aircraftIds } },
-        data: { 
-          asset_id: updatedContract.asset_id,
-          status: 'In Use' 
+  if (isFullyPaid) {
+    // 1. Tandai seluruh surat peringatan / STRD terkait invoice ini menjadi Resolved / Lunas
+    await prisma.warnings.updateMany({
+      where: { invoice_id: invoiceId },
+      data: { status: 'Resolved' }
+    });
+
+    // 2. Jika tenant sudah tidak memiliki tunggakan/STRD aktif lain, pulihkan status pembayaran
+    const remainingOverdue = await prisma.invoices.count({
+      where: {
+        tenant_id: invoice.tenant_id,
+        status: { in: ['Unpaid', 'Overdue', 'Partially Paid'] },
+        id: { not: invoiceId }
+      }
+    });
+    if (remainingOverdue === 0) {
+      await prisma.tenants.update({
+        where: { id: invoice.tenant_id },
+        data: { status_pembayaran: 'Current' }
+      });
+    }
+
+    // 3. Activate contract when paid (jika terikat kontrak PKS)
+    if (invoice.contract_id) {
+      const updatedContract = await prisma.contracts.update({
+        where: { id: invoice.contract_id },
+        data: { status: 'Aktif' },
+        include: {
+          rental_applications: true
+        }
+      });
+
+      // Link aircrafts to the asset if applicable
+      if (updatedContract.rental_applications?.specific_needs) {
+        const specificNeeds = updatedContract.rental_applications.specific_needs;
+        if (Array.isArray(specificNeeds.aircraft_ids) && specificNeeds.aircraft_ids.length > 0) {
+          const aircraftIds = specificNeeds.aircraft_ids.map(aid => Number.parseInt(aid, 10));
+          await prisma.aircrafts.updateMany({
+            where: { id: { in: aircraftIds } },
+            data: { 
+              asset_id: updatedContract.asset_id,
+              status: 'In Use' 
+            }
+          });
+        }
+      }
+    }
+  } else {
+    // JIKA SISA / KURANG DIBAYAR (PARTIALLY PAID / SISA TAGIHAN STRD):
+    // 1. Status pembayaran tenant tetap 'Restricted' (pembatasan hak pemanfaatan aset / layanan)
+    await prisma.tenants.update({
+      where: { id: invoice.tenant_id },
+      data: { status_pembayaran: 'Restricted' }
+    });
+
+    // 2. Update pesan catatan pada STRD warning terkait mutasi pembayaran
+    const strdWarning = invoice.warnings?.find(w => (w.type || '').toUpperCase().includes('STRD'));
+    if (strdWarning) {
+      await prisma.warnings.update({
+        where: { id: strdWarning.id },
+        data: {
+          message: `STRD No. ${strdWarning.warning_number}: Telah diterima setoran sebagian sebesar Rp${paymentAmount.toLocaleString('id-ID')}. Sisa retribusi terutang kurang dibayar sebesar Rp${remainingObligation.toLocaleString('id-ID')}. Sanksi bunga administrasi 1% per bulan tetap berjalan pada sisa kewajiban.`
         }
       });
     }
   }
 
-  return invoice;
+  return updatedInvoice;
+};
+
+exports.rejectPayment = async (id, reason = 'Bukti pembayaran tidak valid') => {
+  const invoiceId = Number.parseInt(id, 10);
+  const invoice = await prisma.invoices.findUnique({
+    where: { id: invoiceId },
+    include: {
+      invoice_payments: {
+        where: { status: 'Pending' },
+        orderBy: { created_at: 'desc' },
+        take: 1
+      }
+    }
+  });
+
+  if (!invoice) throw new Error('Tagihan tidak ditemukan');
+
+  const pendingPayment = invoice.invoice_payments?.[0];
+  if (pendingPayment) {
+    await prisma.invoice_payments.update({
+      where: { id: pendingPayment.id },
+      data: {
+        status: 'Rejected',
+        notes: reason
+      }
+    });
+  }
+
+  const currentPaid = Number(invoice.paid_amount || 0);
+  const revertedStatus = currentPaid > 0 ? 'Partially Paid' : (invoice.due_date && new Date(invoice.due_date) < new Date() ? 'Overdue' : 'Unpaid');
+
+  return await prisma.invoices.update({
+    where: { id: invoiceId },
+    data: {
+      status: revertedStatus,
+      payment_receipt: null
+    }
+  });
 };
 
 exports.generateOverstaySkrd = async (logId) => {
@@ -378,15 +628,16 @@ const calculateHanggarLogDetails = async (log) => {
 
   const verifiedNights = overnightItems.length;
 
-  // Jika belum ada rekaman tutup hari spesifik, gunakan selisih hari tanggal keluar vs masuk
-  let calculatedNights = verifiedNights;
-  if (calculatedNights === 0) {
-    const entryDate = new Date(log.entry_time);
-    const exitDate = log.exit_time ? new Date(log.exit_time) : new Date();
-    const diffTime = Math.abs(exitDate.getTime() - entryDate.getTime());
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    calculatedNights = log.is_overnight ? Math.max(1, diffDays) : 1;
-  }
+  // Hitung durasi inap real berdasarkan selisih tanggal kalender (masuk vs keluar / saat ini)
+  const entryDate = new Date(log.entry_time);
+  const exitDate = log.exit_time ? new Date(log.exit_time) : new Date();
+
+  const entryMidnight = new Date(entryDate.getFullYear(), entryDate.getMonth(), entryDate.getDate()).getTime();
+  const exitMidnight = new Date(exitDate.getFullYear(), exitDate.getMonth(), exitDate.getDate()).getTime();
+  const calendarDays = Math.max(0, Math.round((exitMidnight - entryMidnight) / (1000 * 60 * 60 * 24)));
+
+  // Durasi malam inap aktual (minimal 1 malam):
+  const calculatedNights = Math.max(1, verifiedNights, calendarDays);
 
   // 2. Cari Master Tarif berdasarkan Nomor Registrasi & Tipe Armada
   const aircraft = await prisma.aircrafts.findUnique({
@@ -439,7 +690,11 @@ const calculateHanggarLogDetails = async (log) => {
     subtotal: subtotal,
     evidence_photos: overnightItems.map(i => i.evidence_photo).filter(Boolean),
     tenant_id: log.tenant_id,
-    tenant_name: log.tenants?.nama_perusahaan || 'Maskapai / Operator Tamu'
+    tenant_name: log.tenants?.nama_perusahaan || 'Maskapai / Operator Tamu',
+    contract_type: log.contracts?.contract_type || 'Payung',
+    contract_number: log.contracts?.contract_number || null,
+    contract_fasilitas: log.contracts?.fasilitas || null,
+    is_emergency: log.contracts?.contract_type === 'PKS Pendaratan Darurat'
   };
 };
 
@@ -507,7 +762,11 @@ exports.generateHanggarCheckoutInvoice = async (logId, customRate) => {
   const month = String(today.getMonth() + 1).padStart(2, '0');
   const count = await prisma.invoices.count();
   const seq = String(count + 1).padStart(3, '0');
-  const invoiceNumber = `SKRD-HGR/${year}/${month}/${seq}`;
+  const isEmergency = log.contracts?.contract_type === 'PKS Pendaratan Darurat';
+  const emergencyPaymentToken = isEmergency ? crypto.randomBytes(24).toString('hex') : null;
+  const invoicePrefix = isEmergency ? 'SKRD-EMG' : 'SKRD-HGR';
+  const invoiceType = isEmergency ? 'Pendaratan Darurat' : (log.parking_location === 'Apron' ? 'Sewa Apron' : 'Sewa Hanggar');
+  const invoiceNumber = `${invoicePrefix}/${year}/${month}/${seq}`;
 
   // Jatuh tempo standar 30 hari kalender
   const dueDate = new Date();
@@ -517,7 +776,8 @@ exports.generateHanggarCheckoutInvoice = async (logId, customRate) => {
     ...calc,
     rate_per_night: effectiveRate,
     subtotal: totalAmount,
-    exit_time: log.exit_time || new Date()
+    exit_time: log.exit_time || new Date(),
+    ...(emergencyPaymentToken && { emergency_payment_token: emergencyPaymentToken })
   };
 
   // Hubungkan ke kontrak payung tenant jika ada
@@ -540,7 +800,7 @@ exports.generateHanggarCheckoutInvoice = async (logId, customRate) => {
         invoice_number: invoiceNumber,
         contract_id: contractId,
         tenant_id: log.tenant_id,
-        invoice_type: 'Sewa Hanggar',
+        invoice_type: invoiceType,
         amount: totalAmount,
         due_date: dueDate,
         status: 'Unpaid',
@@ -565,6 +825,29 @@ exports.generateHanggarCheckoutInvoice = async (logId, customRate) => {
     where: { id: log.id },
     data: { invoice_id: newInvoice.id }
   });
+
+  // Kirim email tagihan SKRD khusus untuk pendaratan darurat
+  if (isEmergency && emergencyPaymentToken) {
+    const fasilitas = typeof log.contracts?.fasilitas === 'string'
+      ? JSON.parse(log.contracts.fasilitas)
+      : (log.contracts?.fasilitas || {});
+    const targetEmail = fasilitas?.pic_email || log.tenants?.email;
+    if (targetEmail && !targetEmail.includes('@emergency.bandara-timika.id')) {
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const paymentLink = `${frontendUrl}/pembayaran-darurat/${emergencyPaymentToken}`;
+      try {
+        await emailService.sendEmergencyInvoiceEmail({
+          to: targetEmail,
+          invoice: newInvoice,
+          log,
+          contract: log.contracts,
+          paymentLink
+        });
+      } catch (mailErr) {
+        console.error('Gagal mengirim email SKRD darurat:', mailErr);
+      }
+    }
+  }
 
   return newInvoice;
 };
@@ -670,7 +953,7 @@ exports.generateHanggarPeriodicInvoice = async (payload) => {
 /**
  * Penerbitan SKRD Denda (Slide 5, 6, 9 PPT)
  * Diterbitkan oleh Dinas ketika SKRD pokok belum dibayar melewati jatuh tempo (>30 hari).
- * Besaran denda: 2% per bulan dari nilai pokok yang tertunggak.
+ * Besaran denda: 1% per bulan dari nilai pokok yang tertunggak.
  * Kode Rekening: 4.1.4.01.01 (Pendapatan Denda Retribusi Daerah)
  */
 exports.generatePenaltyInvoice = async (principalInvoiceId, dinasUserId, payload = {}) => {
@@ -709,10 +992,10 @@ exports.generatePenaltyInvoice = async (principalInvoiceId, dinasUserId, payload
 
   // Hitung jumlah bulan keterlambatan (pembulatan ke atas per bulan kalender sesuai PP/Perda Retribusi Daerah)
   const monthsOverdue = Math.max(1, Math.ceil(overdueDays / 30));
-  const ratePct = 2; // 2% per bulan
+  const ratePct = payload.rate_percent_per_month ? Number(payload.rate_percent_per_month) : 1; // 1% per bulan
   const principalAmount = Number(principalInvoice.amount);
   
-  // Custom penalty amount or auto 2% per month
+  // Custom penalty amount or auto 1% per month
   const calculatedPenalty = Math.round(principalAmount * (ratePct / 100) * monthsOverdue);
   const penaltyAmount = payload.custom_amount ? Number(payload.custom_amount) : calculatedPenalty;
 
@@ -895,3 +1178,402 @@ exports.reissueCorrectedInvoice = async (invoiceId, dinasUserId, payload = {}) =
 
   return newInvoice;
 };
+
+
+exports.getEmergencyInvoiceByToken = async (token) => {
+  if (!token) throw new Error('Token pembayaran tidak valid');
+
+  const invoices = await prisma.invoices.findMany({
+    where: {
+      invoice_type: 'Pendaratan Darurat'
+    },
+    include: {
+      contracts: {
+        include: {
+          assets: true,
+          tenants: true
+        }
+      },
+      tenants: true,
+      operational_logs: true
+    }
+  });
+
+  const invoice = invoices.find(inv => {
+    const details = typeof inv.details === 'string' ? JSON.parse(inv.details) : (inv.details || []);
+    const detailItem = Array.isArray(details) ? details[0] : details;
+    return detailItem?.emergency_payment_token === token;
+  });
+
+  if (!invoice) {
+    throw new Error('Tagihan SKRD Pendaratan Darurat dengan tautan ini tidak ditemukan');
+  }
+
+  const details = typeof invoice.details === 'string' ? JSON.parse(invoice.details) : (invoice.details || []);
+  const detailItem = Array.isArray(details) ? details[0] : details;
+
+  return {
+    ...invoice,
+    parsed_details: detailItem,
+    bank_account: {
+      bank_name: 'Bank BPD Papua (Bank Papua)',
+      account_number: '100-01-000000-0',
+      account_holder: 'Bendahara Penerimaan Dishub Kab. Mimika'
+    }
+  };
+};
+
+exports.uploadEmergencyPaymentReceipt = async (token, file, body) => {
+  if (!token) throw new Error('Token pembayaran tidak valid');
+  if (!file) throw new Error('File bukti pembayaran wajib dilampirkan');
+
+  const invoiceData = await exports.getEmergencyInvoiceByToken(token);
+  const { payment_method, sender_name, sender_bank, notes } = body;
+
+  const currentDetails = typeof invoiceData.details === 'string' ? JSON.parse(invoiceData.details) : (invoiceData.details || []);
+  const detailItem = Array.isArray(currentDetails) ? currentDetails[0] : currentDetails;
+
+  const updatedDetailItem = {
+    ...detailItem,
+    sender_name: sender_name || '-',
+    sender_bank: sender_bank || '-',
+    payment_notes: notes || '-'
+  };
+
+  const receiptUrl = file.path || (file.filename ? `/uploads/receipts/${file.filename}` : null);
+
+  const updated = await prisma.invoices.update({
+    where: { id: invoiceData.id },
+    data: {
+      status: 'Pending Verification',
+      payment_receipt: receiptUrl,
+      payment_method: payment_method || 'Transfer Bank',
+      payment_date: new Date(),
+      details: [updatedDetailItem]
+    },
+    include: {
+      tenants: true,
+      contracts: true
+    }
+  });
+
+  return updated;
+};
+
+exports.generateMiniAirportSkrd = async (logId, options = {}) => {
+  const parsedLogId = Number.parseInt(logId, 10);
+  const log = await prisma.operational_logs.findUnique({
+    where: { id: parsedLogId },
+    include: {
+      tenants: true,
+      contracts: true,
+      rental_applications: true
+    }
+  });
+
+  if (!log) throw new Error('Log pendaratan Mini Airport tidak ditemukan');
+  if (log.billing_status === 'Billed') throw new Error('Log pendaratan ini sudah diterbitkan SKRD');
+
+  let parsedNotes = {};
+  if (typeof log.notes === 'string') {
+    try { parsedNotes = JSON.parse(log.notes); } catch (e) { parsedNotes = {}; }
+  }
+
+  // Hitung komponen tax terbaru dari master_taxes
+  const { calculateMiniAirportTaxes } = require('./miniAirportBillingService');
+  const taxCalc = await calculateMiniAirportTaxes({
+    aircraft_type_id: parsedNotes.aircraft_type_id || null,
+    aircraft_type_name: parsedNotes.aircraft_type || '',
+    passengers_count: parsedNotes.passengers_count || 1,
+    is_overnight: log.is_overnight,
+    overnight_nights: parsedNotes.overnight_nights || (log.is_overnight ? 1 : 0)
+  });
+
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const count = await prisma.invoices.count();
+  const seq = String(count + 1).padStart(3, '0');
+  const invoiceNumber = `SKRD-MAP/${year}/${month}/${seq}`;
+
+  // Jatuh tempo standar 30 hari kalender
+  const dueDate = new Date();
+  dueDate.setDate(dueDate.getDate() + 30);
+
+  // Hubungkan ke kontrak payung aktif milik tenant jika belum ada
+  let contractId = log.contract_id || log.rental_applications?.contract_id;
+  if (!contractId) {
+    const activeMiniPayung = await prisma.contracts.findFirst({
+      where: {
+        tenant_id: log.tenant_id,
+        contract_type: 'PKS Payung Mini Airport',
+        status: { in: ['Aktif', 'Active'] }
+      },
+      orderBy: { id: 'desc' }
+    });
+    if (activeMiniPayung) {
+      contractId = activeMiniPayung.id;
+    } else {
+      const activePayung = await prisma.contracts.findFirst({
+        where: {
+          tenant_id: log.tenant_id,
+          contract_type: { in: ['Payung', 'PKS Payung Mozes Kilangin'] },
+          status: { in: ['Aktif', 'Active'] }
+        },
+        orderBy: { id: 'desc' }
+      });
+      if (activePayung) contractId = activePayung.id;
+    }
+  }
+
+  const invoiceDetails = {
+    service_type: 'Mini Airport',
+    log_id: log.id,
+    application_id: log.application_id,
+    application_number: log.rental_applications?.application_number || parsedNotes.application_number || '-',
+    airport_name: parsedNotes.airport_name || 'Mini Airport Perintis',
+    airport_code: parsedNotes.airport_code || '-',
+    airport_location: parsedNotes.airport_location || 'Papua Tengah',
+    registration_number: log.registration_number,
+    aircraft_type: parsedNotes.aircraft_type || 'Pesawat Perintis',
+    allocated_stand: parsedNotes.allocated_stand || log.parking_location || 'STAND 01',
+    entry_time: log.entry_time,
+    exit_time: log.exit_time || today,
+    passengers_count: parsedNotes.passengers_count || 1,
+    is_overnight: log.is_overnight,
+    overnight_nights: parsedNotes.overnight_nights || (log.is_overnight ? 1 : 0),
+    taxes: taxCalc.taxes,
+    total_amount: taxCalc.totalAmount,
+    issued_by: options.issued_by || 'Dinas Perhubungan Papua Tengah'
+  };
+
+  const [newInvoice] = await prisma.$transaction([
+    prisma.invoices.create({
+      data: {
+        invoice_number: invoiceNumber,
+        contract_id: contractId,
+        tenant_id: log.tenant_id,
+        invoice_type: 'Mini Airport',
+        amount: taxCalc.totalAmount,
+        due_date: dueDate,
+        status: 'Unpaid',
+        details: invoiceDetails
+      },
+      include: {
+        tenants: true,
+        contracts: true
+      }
+    }),
+    prisma.operational_logs.update({
+      where: { id: log.id },
+      data: {
+        billing_status: 'Billed',
+        amount: taxCalc.totalAmount,
+        exit_time: log.exit_time || today
+      }
+    })
+  ]);
+
+  await prisma.operational_logs.update({
+    where: { id: log.id },
+    data: { invoice_id: newInvoice.id }
+  });
+
+  return newInvoice;
+};
+
+exports.checkPublicInvoice = async (query) => {
+  if (!query || typeof query !== 'string' || !query.trim()) {
+    throw new Error('Nomor SKRD atau Kode Invoice wajib diisi.');
+  }
+
+  const cleanQuery = query.trim();
+
+  // Search by exact or partial invoice_number, or tenant company name
+  const invoices = await prisma.invoices.findMany({
+    where: {
+      OR: [
+        { invoice_number: { contains: cleanQuery, mode: 'insensitive' } },
+        { tenants: { nama_perusahaan: { contains: cleanQuery, mode: 'insensitive' } } }
+      ]
+    },
+    include: {
+      tenants: {
+        select: {
+          id: true,
+          nama_perusahaan: true,
+          tenant_id_str: true
+        }
+      },
+      contracts: {
+        select: {
+          id: true,
+          contract_number: true,
+          jenis_pemanfaatan: true,
+          assets: {
+            select: {
+              nama_aset: true,
+              kode_aset: true,
+              lokasi: true
+            }
+          }
+        }
+      }
+    },
+    orderBy: {
+      id: 'desc'
+    },
+    take: 5
+  });
+
+  if (!invoices || invoices.length === 0) {
+    return null;
+  }
+
+  const target = invoices[0];
+
+  // Parse details if available
+  let parsedDetails = null;
+  try {
+    parsedDetails = typeof target.details === 'string' ? JSON.parse(target.details) : target.details;
+    if (Array.isArray(parsedDetails) && parsedDetails.length > 0) {
+      parsedDetails = parsedDetails[0];
+    }
+  } catch (e) {
+    parsedDetails = null;
+  }
+
+  const rawStatus = (target.status || '').toLowerCase();
+  const isPaid = rawStatus === 'paid' || rawStatus === 'lunas' || rawStatus === 'verified';
+  const isEmergency = (target.invoice_type || '').toLowerCase().includes('darurat') || target.invoice_type === 'Pendaratan Darurat';
+
+  let statusUi = 'UNPAID';
+  if (isPaid) {
+    statusUi = 'PAID';
+  } else if (isEmergency) {
+    statusUi = 'EMERGENCY';
+  }
+
+  let layanan = target.invoice_type || 'Retribusi Jasa Kebandarudaraan';
+  if (target.contracts?.jenis_pemanfaatan) {
+    layanan = target.contracts.jenis_pemanfaatan;
+  } else if (target.contracts?.assets?.nama_aset) {
+    layanan = `${target.invoice_type} - ${target.contracts.assets.nama_aset}`;
+  } else if (parsedDetails?.alasan) {
+    layanan = parsedDetails.alasan;
+  } else if (parsedDetails?.registration_number) {
+    layanan = `${target.invoice_type} (${parsedDetails.registration_number})`;
+  }
+
+  // Virtual Account Bank Papua (format: 9388 + 4 digit tenant + 8 digit invoice)
+  const tenantPad = String(target.tenant_id || 1).padStart(4, '0');
+  const invPad = String(target.id || 1).padStart(8, '0');
+  const noVa = `9388 ${tenantPad} ${invPad.slice(0, 4)} ${invPad.slice(4)}`;
+
+  const tglTerbit = target.created_at
+    ? new Date(target.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '-';
+
+  const jatuhTempo = target.due_date
+    ? new Date(target.due_date).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '-';
+
+  const tglLunas = target.payment_date
+    ? new Date(target.payment_date).toLocaleDateString('id-ID', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      }) + ' WIT'
+    : (isPaid ? 'Tervalidasi Kas Daerah' : undefined);
+
+  const ntb = isPaid
+    ? (target.payment_receipt && typeof target.payment_receipt === 'string' && target.payment_receipt.startsWith('BP-TRX')
+        ? target.payment_receipt
+        : `BP-TRX-${new Date(target.payment_date || target.updated_at || Date.now()).toISOString().slice(0, 10).replace(/-/g, '')}-${String(target.id).padStart(4, '0')}`)
+    : undefined;
+
+  let keterangan = 'Menunggu pembayaran via Virtual Account Bank Papua (Kasda Kab. Mimika).';
+  if (isPaid) {
+    keterangan = 'Tagihan telah lunas tervalidasi ke Kas Daerah (Kasda) Kab. Mimika.';
+  } else if (isEmergency) {
+    keterangan = 'Tagihan pendaratan darurat. Dapat dibayar langsung via QRIS / Virtual Account Kasda.';
+  }
+
+  const skrdNo = target.invoice_number;
+  const invoiceNo = skrdNo.startsWith('SKRD') ? skrdNo.replace('SKRD', 'INV') : `INV/${skrdNo}`;
+
+  return {
+    id: target.id,
+    status: statusUi,
+    skrdNo,
+    invoiceNo,
+    wajibRetribusi: target.tenants?.nama_perusahaan || 'Mitra Bandara Mozes Kilangin',
+    layanan,
+    tglTerbit,
+    jatuhTempo: isPaid ? undefined : jatuhTempo,
+    tglLunas: isPaid ? tglLunas : undefined,
+    totalTagihan: Number(target.amount) + Number(target.penalty_amount || 0),
+    noVa,
+    ntb,
+    tokenDarurat: parsedDetails?.emergency_payment_token || (isEmergency ? `emg-token-${target.id}-safe` : undefined),
+    keterangan,
+    totalMatches: invoices.length
+  };
+};
+
+exports.scanReceipt = async (id) => {
+  const invoiceId = Number.parseInt(id, 10);
+  const invoice = await prisma.invoices.findUnique({
+    where: { id: invoiceId },
+    include: {
+      invoice_payments: {
+        orderBy: { created_at: 'desc' },
+        take: 1
+      }
+    }
+  });
+
+  if (!invoice) throw new Error('Tagihan tidak ditemukan');
+  const receiptUrl = invoice.payment_receipt || invoice.invoice_payments?.[0]?.payment_receipt;
+  if (!receiptUrl) throw new Error('Tidak ada file bukti pembayaran yang dapat dipindai');
+
+  const aiAnalysis = await aiVisionService.analyzePaymentReceipt(receiptUrl);
+  let ocrData = null;
+  let ocrStatus = 'Pending';
+
+  if (aiAnalysis && aiAnalysis.status === 'Success' && aiAnalysis.data) {
+    ocrData = aiAnalysis.data;
+    ocrStatus = 'Success';
+  } else {
+    ocrStatus = aiAnalysis.status || 'Failed';
+    ocrData = { notes: aiAnalysis.message };
+  }
+
+  const latestPayment = invoice.invoice_payments?.[0];
+  if (latestPayment) {
+    await prisma.invoice_payments.update({
+      where: { id: latestPayment.id },
+      data: {
+        ocr_status: ocrStatus,
+        ocr_data: ocrData,
+        notes: ocrData?.notes ? ocrData.notes : latestPayment.notes,
+        amount: (ocrData?.amount_detected && Number(ocrData.amount_detected) > 0)
+          ? Number(ocrData.amount_detected)
+          : latestPayment.amount
+      }
+    });
+  }
+
+  return await prisma.invoices.findUnique({
+    where: { id: invoiceId },
+    include: {
+      invoice_payments: { orderBy: { created_at: 'desc' } },
+      tenants: true,
+      warnings: true
+    }
+  });
+};
+
+

@@ -15,6 +15,9 @@ exports.createSchedule = async (req, res, next) => {
       message: 'Jadwal pemakaian hanggar berhasil diajukan. Menunggu verifikasi Petugas Lapangan.'
     });
   } catch (error) {
+    if (!error.statusCode) {
+      error.statusCode = 400;
+    }
     next(error);
   }
 };
@@ -44,7 +47,7 @@ exports.verifySchedule = async (req, res, next) => {
   try {
     const scheduleId = req.params.id;
     const officerId = req.user.id;
-    const schedule = await flightScheduleService.verifyScheduleByOfficer(scheduleId, officerId, req.body);
+    const schedule = await flightScheduleService.verifyScheduleByOfficer(scheduleId, officerId, req.body, req.file);
 
     res.json({
       success: true,
@@ -80,3 +83,32 @@ exports.checkInFromSchedule = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.resendTicket = async (req, res, next) => {
+  try {
+    const scheduleId = req.params.id;
+    const result = await flightScheduleService.resendEntryPermitTicket(scheduleId);
+
+    res.json({
+      success: true,
+      message: result.message,
+      email: result.email
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getPublicTicket = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const schedule = await flightScheduleService.getPublicTicket(id);
+    if (!schedule) {
+      return res.status(404).json({ success: false, message: 'Tiket izin masuk tidak ditemukan' });
+    }
+    res.json({ success: true, data: schedule });
+  } catch (error) {
+    next(error);
+  }
+};
+

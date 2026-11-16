@@ -5,6 +5,8 @@ const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddlewar
 
 router.use(authMiddleware);
 
+router.get('/mini', airportController.getAllMiniAirports);
+
 router
   .route('/')
   .get(airportController.getAllAirports)

@@ -6,11 +6,11 @@ const { authMiddleware, authorizeRoles } = require('../middlewares/authMiddlewar
 
 router.use(authMiddleware);
 
-router.get('/', authorizeRoles('admin', 'superadmin', 'dinas', 'kepala dinas', 'petugas', 'petugas lapangan', 'warden'), tenantController.getTenants);
+router.get('/', authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas', 'petugas', 'petugas_mini_airport'), tenantController.getTenants);
 router.get('/:id', tenantController.getTenant);
-router.post('/', authorizeRoles('admin', 'superadmin', 'dinas'), tenantController.createTenant);
+router.post('/', authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas'), tenantController.createTenant);
 router.put('/:id/profile', tenantController.updateProfile);
-router.put('/:id/verify', authorizeRoles('admin', 'superadmin', 'dinas', 'kepala dinas'), tenantController.verifyTenant);
+router.put('/:id/verify', authorizeRoles('admin', 'admin_mini_airport', 'superadmin', 'dinas', 'kepala dinas'), tenantController.verifyTenant);
 router.post('/:id/legalitas', upload.single('file'), tenantController.uploadLegalitas);
 
 module.exports = router;

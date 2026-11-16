@@ -11,19 +11,24 @@ async function main() {
     'otps',
     'parking_warden_handovers',
     'parking_ticket_books',
+    'daily_overnight_items',
+    'daily_overnight_reports',
     'operational_logs',
     'warnings',
     'invoices',
+    'flight_schedules',
     'rental_applications',
     'contracts',
     'aircrafts',
     'assets',
+    'master_taxes',
     'master_tariffs',
     'aircraft_types',
     'tenants',
     'zones',
     'users',
-    'airports'
+    'airports',
+    'mini_airports'
   ];
 
   try {

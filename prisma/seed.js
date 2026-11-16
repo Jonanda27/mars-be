@@ -5,11 +5,13 @@ async function main() {
   console.log('=== Memulai Proses Seeding Database MARS ===\n');
 
   const scripts = [
-    'seed_roles.js',
     'seed_airports_zones.js',
-    'seed_users_tenants.js',
+    'seed_mini_airports.js',
     'seed_aircraft_tariffs.js',
-    'seed_assets.js'
+    'seed_users_tenants.js',
+    'seed_assets.js',
+    'seed_taxes.js',
+    'seed_parking.js'
   ];
 
   for (const script of scripts) {
@@ -19,7 +21,7 @@ async function main() {
     console.log(`--> ${script} selesai.\n`);
   }
 
-  console.log('=== Semua Seeder Berhasil Dijalankan! ===');
+  console.log('=== Semua Seeder Berhasil Dijalankan Secara Konsisten! ===');
 }
 
 main().catch((e) => {

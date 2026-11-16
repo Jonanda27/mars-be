@@ -1,4 +1,54 @@
+// Emergency check-in (PKS Pendaratan Darurat)
+exports.emergencyCheckin = async (req, res, next) => {
+  try {
+    const {
+      contract_id,
+      registration_number,
+      aircraft_type_id,
+      airline_name,
+      pic_name,
+      pic_phone,
+      pic_email,
+      parking_location,
+      asset_id,
+      emergency_reason,
+      pic_signature
+    } = req.body;
+
+    const officer_id = req.user ? req.user.id : 1;
+    let evidence_photo = null;
+    if (req.file) {
+      evidence_photo = req.file.path;
+    }
+
+    const result = await logService.emergencyCheckin({
+      contract_id,
+      registration_number,
+      aircraft_type_id,
+      airline_name,
+      pic_name,
+      pic_phone,
+      pic_email,
+      parking_location: parking_location || 'Hanggar',
+      asset_id,
+      emergency_reason,
+      pic_signature,
+      evidence_photo,
+      officer_id
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Pendaratan Darurat berhasil dicatat dan PKS Darurat telah diterbitkan.',
+      data: result
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const logService = require('../services/logService');
+const { filterOperationalLogsByScope } = require('../utils/adminScope');
 
 // Create new log entry (pesawat masuk)
 exports.createLogEntry = async (req, res, next) => {
@@ -50,7 +100,8 @@ exports.updateLogExit = async (req, res, next) => {
 exports.getAllLogs = async (req, res, next) => {
   try {
     const logs = await logService.getAllLogs();
-    res.status(200).json({ success: true, data: logs });
+    const scopedLogs = filterOperationalLogsByScope(logs, req.user);
+    res.status(200).json({ success: true, data: scopedLogs });
   } catch (error) {
     next(error);
   }
@@ -59,7 +110,8 @@ exports.getAllLogs = async (req, res, next) => {
 exports.getActiveLogs = async (req, res, next) => {
   try {
     const logs = await logService.getActiveLogs();
-    res.status(200).json({ success: true, data: logs });
+    const scopedLogs = filterOperationalLogsByScope(logs, req.user);
+    res.status(200).json({ success: true, data: scopedLogs });
   } catch (error) {
     next(error);
   }
@@ -68,7 +120,8 @@ exports.getActiveLogs = async (req, res, next) => {
 exports.getOverstayLogs = async (req, res, next) => {
   try {
     const logs = await logService.getOverstayLogs();
-    res.status(200).json({ success: true, data: logs });
+    const scopedLogs = filterOperationalLogsByScope(logs, req.user);
+    res.status(200).json({ success: true, data: scopedLogs });
   } catch (error) {
     next(error);
   }

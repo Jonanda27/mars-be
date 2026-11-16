@@ -5,10 +5,10 @@ const rateLimit = require('express-rate-limit');
 
 const { authMiddleware } = require('../middlewares/authMiddleware');
 
-// Batasan: maksimal 3 request per IP setiap 5 menit
+// Batasan: maksimal 5 request per IP setiap 5 menit
 const otpLimiter = rateLimit({
   windowMs: 5 * 60 * 1000, 
-  max: 3, 
+  max: 5, 
   message: {
     success: false,
     message: "Terlalu banyak permintaan OTP dari IP Anda, silakan coba lagi setelah 5 menit."

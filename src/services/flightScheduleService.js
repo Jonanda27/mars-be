@@ -1,4 +1,5 @@
 const prisma = require('../config/db');
+const emailService = require('./emailService');
 
 // Helper: Generate Schedule Number: SCH/YYYY/MM/XXXX
 const generateScheduleNumber = async () => {
@@ -28,21 +29,46 @@ exports.createSchedule = async (tenantId, payload, fileUrl) => {
   const parsedTenantId = Number.parseInt(tenantId, 10);
 
   // 1. Validasi Kontrak Payung Aktif & Belum Expired
-  const activePayung = await prisma.contracts.findFirst({
+  let activePayung = await prisma.contracts.findFirst({
     where: {
       tenant_id: parsedTenantId,
-      contract_type: 'Payung',
+      OR: [
+        { contract_type: 'PKS Payung Mozes Kilangin' },
+        { contract_type: 'Payung' },
+        { contract_number: { contains: 'MOZES', mode: 'insensitive' } }
+      ],
       status: { in: ['Aktif', 'Active'] }
     },
     include: {
       assets: true,
       rental_applications: {
-        where: { application_type: 'Sewa Hanggar' },
+        where: { application_type: { in: ['Sewa Hanggar', 'Sewa Apron'] } },
         orderBy: { id: 'desc' }
       }
     },
     orderBy: { id: 'desc' }
   });
+
+  if (!activePayung) {
+    activePayung = await prisma.contracts.findFirst({
+      where: {
+        tenant_id: parsedTenantId,
+        OR: [
+          { contract_type: { contains: 'Payung', mode: 'insensitive' } },
+          { contract_number: { contains: 'PAYUNG', mode: 'insensitive' } }
+        ],
+        status: { in: ['Aktif', 'Active'] }
+      },
+      include: {
+        assets: true,
+        rental_applications: {
+          where: { application_type: { in: ['Sewa Hanggar', 'Sewa Apron'] } },
+          orderBy: { id: 'desc' }
+        }
+      },
+      orderBy: { id: 'desc' }
+    });
+  }
 
   if (!activePayung) {
     throw new Error('Anda belum memiliki Kontrak Payung (PKS Induk) yang aktif. Silakan ajukan Kontrak Payung terlebih dahulu.');
@@ -79,24 +105,96 @@ exports.createSchedule = async (tenantId, payload, fileUrl) => {
   const regNumber = selectedAircraft ? selectedAircraft.registration_number : payload.registration_number.toUpperCase().trim();
   const aircraftType = selectedAircraft?.aircraft_types?.jenis_pesawat || payload.aircraft_type || 'Standar';
 
+  // 2b. Validasi Ketersediaan Armada:
+  // Armada yang sudah membuat pengajuan (Menunggu Verifikasi), sudah diverifikasi (Disetujui),
+  // atau sudah di-check in (sedang berada di hanggar/apron) TIDAK BISA mengajukan jadwal baru
+  // sampai armada tersebut telah di-checkout.
+
+  // 1) Cek apakah armada sedang aktif terparkir (checked-in di operational_logs dan belum checkout)
+  const activeLog = await prisma.operational_logs.findFirst({
+    where: {
+      registration_number: regNumber,
+      exit_time: null
+    }
+  });
+
+  if (activeLog) {
+    throw new Error(
+      `Armada ${regNumber} saat ini masih aktif berada di dalam ${activeLog.parking_location || 'Hanggar'} (sudah Check-In) dan belum melakukan Check-Out. Pengajuan jadwal baru hanya dapat dilakukan setelah armada melakukan Check-Out.`
+    );
+  }
+
+  // 2) Cek apakah armada sedang memiliki pengajuan jadwal yang aktif (Menunggu Verifikasi, Disetujui, atau Checked-In)
+  const activeSchedule = await prisma.flight_schedules.findFirst({
+    where: {
+      registration_number: regNumber,
+      status: {
+        in: ['Menunggu Verifikasi Petugas', 'Disetujui', 'Checked-In']
+      }
+    },
+    orderBy: { created_at: 'desc' }
+  });
+
+  if (activeSchedule) {
+    let reasonText = '';
+    if (activeSchedule.status === 'Menunggu Verifikasi Petugas') {
+      reasonText = `masih memiliki pengajuan jadwal yang sedang menunggu verifikasi petugas (No. Jadwal: ${activeSchedule.schedule_number})`;
+    } else if (activeSchedule.status === 'Disetujui') {
+      reasonText = `sudah memiliki jadwal yang telah diverifikasi/disetujui dan sedang menunggu kedatangan armada di lokasi (No. Jadwal: ${activeSchedule.schedule_number})`;
+    } else {
+      reasonText = `sedang dalam status ${activeSchedule.status} (No. Jadwal: ${activeSchedule.schedule_number})`;
+    }
+
+    throw new Error(
+      `Armada ${regNumber} ${reasonText}. Anda tidak dapat mengajukan jadwal baru untuk armada ini sampai jadwal tersebut selesai dan armada telah di-checkout.`
+    );
+  }
+
   // 3. Periode Layanan Sewa Hanggar (Murni dari Tanggal yang Dipilih saat Step Pilih Layanan Permohonan Sewa, BUKAN Masa Kontrak Payung 1 Tahun)
   const arrivalDate = new Date(payload.estimated_arrival);
   if (isNaN(arrivalDate.getTime())) {
     throw new Error('Format tanggal dan jam estimasi kedatangan tidak valid');
   }
 
-  // Cari rental_application Sewa Hanggar aktif untuk tenant ini
-  let hanggarApp = activePayung.rental_applications?.[0];
-  if (!hanggarApp || !hanggarApp.start_date || !hanggarApp.end_date) {
+  // Cari rental_application Sewa Hanggar/Apron aktif untuk tenant ini (bukan Mini Airport)
+  let hanggarApp = null;
+  if (payload.rental_application_id) {
     hanggarApp = await prisma.rental_applications.findFirst({
+      where: { 
+        id: Number.parseInt(payload.rental_application_id, 10),
+        application_type: { in: ['Sewa Hanggar', 'Sewa Apron'] }
+      },
+      include: { assets: true }
+    });
+    if (!hanggarApp) {
+      throw new Error('Permohonan yang dipilih bukan permohonan Sewa Hanggar/Apron Bandara Mozes Kilangin');
+    }
+  }
+
+  if (!hanggarApp) {
+    const allTenantHanggarApps = await prisma.rental_applications.findMany({
       where: {
         tenant_id: parsedTenantId,
-        application_type: 'Sewa Hanggar',
+        application_type: { in: ['Sewa Hanggar', 'Sewa Apron'] },
+        status: { in: ['Aktif', 'Active', 'Disetujui', 'Approved', 'Signed', 'Draft Kontrak', 'Surat Disetujui'] },
         start_date: { not: null },
         end_date: { not: null }
       },
+      include: { assets: true },
       orderBy: { id: 'desc' }
     });
+
+    if (selectedAircraft) {
+      hanggarApp = allTenantHanggarApps.find(a => {
+        const spec = typeof a.specific_needs === 'string' ? JSON.parse(a.specific_needs) : (a.specific_needs || {});
+        const ids = spec.aircraft_ids || [];
+        return ids.map(String).includes(String(selectedAircraft.id));
+      });
+    }
+
+    if (!hanggarApp && allTenantHanggarApps.length > 0) {
+      hanggarApp = allTenantHanggarApps[0];
+    }
   }
 
   if (!hanggarApp || !hanggarApp.start_date || !hanggarApp.end_date) {
@@ -144,7 +242,7 @@ exports.createSchedule = async (tenantId, payload, fileUrl) => {
       aircraft_id: selectedAircraft ? selectedAircraft.id : null,
       registration_number: regNumber,
       aircraft_type: aircraftType,
-      parking_location: payload.parking_location || 'Hanggar',
+      parking_location: payload.parking_location || (hanggarApp?.assets?.jenis_aset || 'Hanggar'),
       purpose: payload.purpose || 'Inap Reguler / RON',
       estimated_arrival: arrivalDate,
       estimated_departure: departureDate,
@@ -170,6 +268,9 @@ exports.getTenantSchedules = async (tenantId) => {
     include: {
       aircraft: true,
       contract: true,
+      tenant: {
+        select: { nama_perusahaan: true, tenant_id_str: true, email: true, nomor_telepon: true, pic: true }
+      },
       verified_by_officer: {
         select: { username: true, role: true }
       }
@@ -178,7 +279,7 @@ exports.getTenantSchedules = async (tenantId) => {
   });
 };
 
-// 3. Ambil Seluruh Jadwal (Untuk Petugas Lapangan & Admin)
+// 3. Ambil Seluruh Jadwal (Khusus Petugas Lapangan Mozes Kilangin & Admin)
 exports.getAllSchedules = async (filters = {}) => {
   const where = {};
   if (filters.status) {
@@ -189,13 +290,17 @@ exports.getAllSchedules = async (filters = {}) => {
   }
   if (filters.parking_location) {
     where.parking_location = filters.parking_location;
+  } else {
+    // Pastikan HANYA jadwal pemakaian fasilitas Bandara Mozes Kilangin (Hanggar & Apron)
+    // dan tidak memuat jadwal/pendaratan Mini Airport
+    where.parking_location = { in: ['Hanggar', 'Apron', 'Hanggar Mozes Kilangin', 'Apron Mozes Kilangin'] };
   }
 
   return await prisma.flight_schedules.findMany({
     where,
     include: {
       tenant: {
-        select: { nama_perusahaan: true, tenant_id_str: true }
+        select: { nama_perusahaan: true, tenant_id_str: true, email: true, nomor_telepon: true, pic: true }
       },
       aircraft: true,
       contract: true,
@@ -208,7 +313,7 @@ exports.getAllSchedules = async (filters = {}) => {
 };
 
 // 4. Verifikasi Izin Masuk oleh Petugas Lapangan
-exports.verifyScheduleByOfficer = async (scheduleId, officerId, data) => {
+exports.verifyScheduleByOfficer = async (scheduleId, officerId, data, file) => {
   const sId = Number.parseInt(scheduleId, 10);
   const { status, parking_location, officer_notes } = data;
 
@@ -225,23 +330,91 @@ exports.verifyScheduleByOfficer = async (scheduleId, officerId, data) => {
     throw new Error('Data pengajuan jadwal tidak ditemukan');
   }
 
+  if (schedule.status !== 'Menunggu Verifikasi Petugas') {
+    throw new Error('Jadwal ini sudah diverifikasi sebelumnya dan tidak dapat diubah lagi');
+  }
+
   const updatedSchedule = await prisma.flight_schedules.update({
     where: { id: sId },
     data: {
       status,
-      parking_location: parking_location || schedule.parking_location,
+      parking_location: schedule.parking_location || 'Hanggar',
       officer_notes: officer_notes || null,
       verified_by_officer_id: Number.parseInt(officerId, 10),
       verified_at: new Date()
     },
     include: {
-      tenant: true,
+      tenant: {
+        include: { users: true }
+      },
       aircraft: true,
       verified_by_officer: { select: { username: true } }
     }
   });
 
+  // Jika izin masuk disetujui, kirimkan e-Tiket Izin Masuk ke email resmi tenant
+  if (status === 'Disetujui') {
+    const tenantEmail = updatedSchedule.tenant?.email || updatedSchedule.tenant?.users?.email;
+    if (tenantEmail) {
+      const pdfAttachment = file ? {
+        filename: `Tiket_Izin_Masuk_${updatedSchedule.schedule_number.replace(/\//g, '_')}_${updatedSchedule.registration_number}.pdf`,
+        path: file.path
+      } : null;
+
+      emailService.sendHangarEntryPermitEmail({
+        to: tenantEmail,
+        schedule: updatedSchedule,
+        tenant: updatedSchedule.tenant,
+        officer: updatedSchedule.verified_by_officer,
+        pdfAttachment
+      }).catch(err => {
+        console.error('Gagal mengirim email tiket izin masuk hanggar:', err);
+      });
+    }
+  }
+
   return updatedSchedule;
+};
+
+// Kirim ulang tiket izin masuk hanggar ke email tenant
+exports.resendEntryPermitTicket = async (scheduleId) => {
+  const sId = Number.parseInt(scheduleId, 10);
+  const schedule = await prisma.flight_schedules.findUnique({
+    where: { id: sId },
+    include: {
+      tenant: {
+        include: { users: true }
+      },
+      aircraft: true,
+      verified_by_officer: { select: { username: true } }
+    }
+  });
+
+  if (!schedule) {
+    throw new Error('Data pengajuan jadwal tidak ditemukan');
+  }
+
+  if (schedule.status !== 'Disetujui' && schedule.status !== 'Checked-In' && schedule.status !== 'Checked-Out' && schedule.status !== 'Completed' && schedule.status !== 'Selesai') {
+    throw new Error('Tiket izin masuk hanya dapat dikirimkan untuk jadwal yang telah disetujui');
+  }
+
+  const tenantEmail = schedule.tenant?.email || schedule.tenant?.users?.email;
+  if (!tenantEmail) {
+    throw new Error('Alamat email resmi tenant tidak ditemukan');
+  }
+
+  const result = await emailService.sendHangarEntryPermitEmail({
+    to: tenantEmail,
+    schedule: schedule,
+    tenant: schedule.tenant,
+    officer: schedule.verified_by_officer
+  });
+
+  if (!result.success) {
+    throw new Error(result.error || 'Gagal mengirimkan email tiket');
+  }
+
+  return { success: true, email: tenantEmail, message: `Tiket izin masuk berhasil dikirim ke ${tenantEmail}` };
 };
 
 // 5. Ambil Daftar Rencana Kedatangan Hari Ini (Disetujui & Siap Check-In)
@@ -254,11 +427,12 @@ exports.getTodayExpectedArrivals = async () => {
 
   return await prisma.flight_schedules.findMany({
     where: {
-      status: 'Disetujui'
+      status: 'Disetujui',
+      parking_location: { in: ['Hanggar', 'Apron', 'Hanggar Mozes Kilangin', 'Apron Mozes Kilangin'] }
     },
     include: {
       tenant: {
-        select: { nama_perusahaan: true }
+        select: { nama_perusahaan: true, tenant_id_str: true, email: true, nomor_telepon: true, pic: true }
       },
       aircraft: true,
       contract: true
@@ -311,4 +485,29 @@ exports.checkInFromSchedule = async (scheduleId, officerId, payload = {}) => {
   });
 
   return result;
+};
+
+// 7. Ambil Tiket Jadwal Publik untuk Akses Langsung (Tanpa Login / WhatsApp Link)
+exports.getPublicTicket = async (paramId) => {
+  const sId = Number.parseInt(paramId, 10);
+  let where = {};
+  if (!Number.isNaN(sId) && String(sId) === String(paramId)) {
+    where = { id: sId };
+  } else {
+    where = { schedule_number: paramId };
+  }
+
+  return await prisma.flight_schedules.findFirst({
+    where,
+    include: {
+      tenant: {
+        select: { nama_perusahaan: true, tenant_id_str: true, email: true, nomor_telepon: true, pic: true }
+      },
+      aircraft: true,
+      contract: true,
+      verified_by_officer: {
+        select: { username: true, role: true }
+      }
+    }
+  });
 };

@@ -5,7 +5,7 @@ const reportService = require('../services/reportService');
  */
 exports.getRetributionReport = async (req, res, next) => {
   try {
-    const reportData = await reportService.getRetributionReport(req.query);
+    const reportData = await reportService.getRetributionReport(req.query, req.user);
     res.status(200).json({
       success: true,
       message: 'Laporan Rekapitulasi Realisasi Retribusi berhasil dimuat',
