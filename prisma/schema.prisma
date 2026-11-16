@@ -10,7 +10,7 @@ datasource db {
 model aircrafts {
   id                  Int       @id @default(autoincrement())
   registration_number String    @unique @db.VarChar(50)
-  aircraft_type       String?   @db.VarChar(100)
+  aircraft_type_id    Int?
   aircraft_owner      String?   @db.VarChar(150)
   operator            String?   @db.VarChar(150)
   mtow                Decimal?  @db.Decimal(10, 2)
@@ -21,8 +21,22 @@ model aircrafts {
   capacity            Int?
   created_at          DateTime? @default(now()) @db.Timestamp(6)
   updated_at          DateTime? @default(now()) @db.Timestamp(6)
+  
+  aircraft_types      aircraft_types? @relation(fields: [aircraft_type_id], references: [id], onDelete: SetNull)
   assets              assets?   @relation(fields: [asset_id], references: [id], onUpdate: NoAction)
   tenants             tenants?  @relation(fields: [tenant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  flight_schedules    flight_schedules[]
+}
+
+model aircraft_types {
+  id               Int       @id @default(autoincrement())
+  jenis_pesawat    String    @unique @db.VarChar(100)
+  luas_efektif_m2  Decimal   @db.Decimal(10, 2)
+  created_at       DateTime? @default(now()) @db.Timestamp(6)
+  updated_at       DateTime? @default(now()) @db.Timestamp(6)
+  
+  aircrafts        aircrafts[]
+  master_tariffs   master_tariffs[] // Back-relation: satu tipe pesawat bisa punya 1 tarif
 }
 
 model airports {
@@ -84,16 +98,18 @@ model assets {
   rental_applications rental_applications[]
   contracts           contracts[]
   master_tariffs      master_tariffs? @relation(fields: [master_tariff_id], references: [id], onDelete: SetNull)
+  overnight_items     daily_overnight_items[]
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model tenants {
-  id                Int         @id @default(autoincrement())
-  user_id           Int?
-  tenant_id_str     String?     @unique @db.VarChar(50)
-  nama_perusahaan   String      @db.VarChar(150)
-  nib               String?     @db.VarChar(50)
-  npwp              String?     @db.VarChar(50)
+    id                Int         @id @default(autoincrement())
+    user_id           Int?
+    tenant_id_str     String?     @unique @db.VarChar(50)
+    nama_perusahaan   String      @db.VarChar(150)
+    jenis_tenant      String?     @default("Maskapai") @db.VarChar(50)
+    nib               String?     @db.VarChar(50)
+    npwp              String?     @db.VarChar(50)
   alamat            String?
   pic               String?     @db.VarChar(100)
   nomor_telepon     String?     @db.VarChar(50)
@@ -104,25 +120,33 @@ model tenants {
   created_at        DateTime?   @default(now()) @db.Timestamp(6)
   updated_at        DateTime?   @default(now()) @db.Timestamp(6)
   status_verifikasi String?     @default("Pending") @db.VarChar(20)
+  alasan_penolakan  String?     @db.Text
   aircrafts           aircrafts[]
   rental_applications rental_applications[]
   contracts           contracts[]
   invoices            invoices[]
   warnings            warnings[]
+  operational_logs    operational_logs[]
+  overnight_items     daily_overnight_items[]
+  flight_schedules    flight_schedules[]
   users               users?      @relation(fields: [user_id], references: [id], onUpdate: NoAction)
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model users {
-  id            Int       @id @default(autoincrement())
-  username      String    @unique @db.VarChar(50)
-  password_hash String    @db.VarChar(255)
-  role          String    @db.VarChar(20)
-  airport_id    Int?
-  created_at    DateTime? @default(now()) @db.Timestamp(6)
+  id                Int       @id @default(autoincrement())
+  username          String    @unique @db.VarChar(50)
+  password_hash     String    @db.VarChar(255)
+  role              String    @db.VarChar(20)
+  airport_id        Int?
+  created_at        DateTime? @default(now()) @db.Timestamp(6)
   
-  airports      airports? @relation(fields: [airport_id], references: [id], onDelete: SetNull)
-  tenants       tenants[]
+  airports          airports? @relation(fields: [airport_id], references: [id], onDelete: SetNull)
+  tenants           tenants[]
+  logged_operations operational_logs[]
+  notifications     notifications[]
+  overnight_reports daily_overnight_reports[]
+  verified_schedules flight_schedules[]
 }
 
 model rental_applications {
@@ -130,24 +154,29 @@ model rental_applications {
   application_number String      @unique @db.VarChar(50)
   tenant_id          Int
   asset_id           Int?
+  application_type   String?     @db.VarChar(50)
   purpose            String?     @db.VarChar(255)
   specific_needs     Json?
   status             String?     @default("Pending") @db.VarChar(50)
   start_date         DateTime?   @db.Date
   end_date           DateTime?   @db.Date
+  contract_id        Int?
+  signed_document_url String?    @db.VarChar(255)
+  official_letter_url String?    @db.VarChar(255)
   created_at         DateTime?   @default(now()) @db.Timestamp(6)
   updated_at         DateTime?   @default(now()) @db.Timestamp(6)
-  tenants            tenants     @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  assets             assets?     @relation(fields: [asset_id], references: [id], onDelete: SetNull)
-  contracts          contracts?
+  tenants             tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  assets              assets?   @relation(fields: [asset_id], references: [id], onDelete: SetNull)
+  contracts           contracts? @relation(fields: [contract_id], references: [id], onDelete: SetNull)
+  operational_logs    operational_logs[]
 }
 
 model contracts {
-  id                 Int         @id @default(autoincrement())
-  contract_number    String      @unique @db.VarChar(50)
-  application_id     Int         @unique
-  tenant_id          Int
-  asset_id           Int
+  id                   Int         @id @default(autoincrement())
+  contract_number      String      @unique @db.VarChar(50)
+  contract_type        String      @default("Payung") @db.VarChar(50)
+  tenant_id            Int
+  asset_id             Int?
   status               String?     @default("Draft") @db.VarChar(50)
   start_date           DateTime?   @db.Date
   end_date             DateTime?   @db.Date
@@ -161,50 +190,63 @@ model contracts {
   denda                String?
   total_amount         Decimal?    @db.Decimal(15, 2)
   file_url             String?     @db.VarChar(255)
+  signed_document_url  String?     @db.VarChar(255)
   admin_signature      String?     @db.Text
   tenant_signature     String?     @db.Text
   created_at           DateTime?   @default(now()) @db.Timestamp(6)
-  updated_at         DateTime?   @default(now()) @db.Timestamp(6)
-  rental_applications rental_applications @relation(fields: [application_id], references: [id], onDelete: Cascade)
-  tenants            tenants     @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  assets             assets      @relation(fields: [asset_id], references: [id], onDelete: Restrict)
-  invoices           invoices[]
+  updated_at           DateTime?   @default(now()) @db.Timestamp(6)
+  
+  tenants              tenants     @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  assets               assets?     @relation(fields: [asset_id], references: [id], onDelete: Restrict)
+  rental_applications  rental_applications[]
+  invoices             invoices[]
+  operational_logs     operational_logs[]
+  flight_schedules     flight_schedules[]
 }
 
 model master_tariffs {
-  id            Int       @id @default(autoincrement())
-  kode_tarif    String    @unique @db.VarChar(50)
-  jenis_layanan String    @db.VarChar(100)
-  objek         String    @db.VarChar(150)
-  satuan        String    @db.VarChar(50)
-  tarif         Decimal   @db.Decimal(15, 2)
-  dasar_hukum   String?   @db.VarChar(255)
-  valid_from    DateTime? @db.Date
-  valid_to      DateTime? @db.Date
-  status        String?   @default("Active") @db.VarChar(50)
-  created_at    DateTime? @default(now()) @db.Timestamp(6)
-  updated_at    DateTime? @default(now()) @db.Timestamp(6)
-  assets        assets[]
+  id               Int       @id @default(autoincrement())
+  kode_tarif       String    @unique @db.VarChar(50)
+  jenis_layanan    String    @db.VarChar(100)
+  // objek tetap ada sebagai human-readable label untuk invoice/cetak dokumen
+  objek            String    @db.VarChar(150)
+  // FK ke aircraft_types (null untuk tarif non-pesawat seperti Sewa Ruangan)
+  aircraft_type_id Int?
+  satuan           String    @db.VarChar(50)
+  tarif            Decimal   @db.Decimal(15, 2)
+  dasar_hukum      String?   @db.VarChar(255)
+  fasilitas_tambahan Json?
+  valid_from       DateTime? @db.Date
+  valid_to         DateTime? @db.Date
+  status           String?   @default("Active") @db.VarChar(50)
+  created_at       DateTime? @default(now()) @db.Timestamp(6)
+  updated_at       DateTime? @default(now()) @db.Timestamp(6)
+
+  assets           assets[]
+  aircraft_types   aircraft_types? @relation(fields: [aircraft_type_id], references: [id], onDelete: SetNull)
 }
 
 model invoices {
-  id             Int       @id @default(autoincrement())
-  invoice_number String    @unique @db.VarChar(50)
-  contract_id    Int
-  tenant_id      Int
-  amount         Decimal   @db.Decimal(15, 2)
-  penalty_amount Decimal?  @default(0) @db.Decimal(15, 2)
-  due_date       DateTime? @db.Date
-  status         String?   @default("Unpaid") @db.VarChar(50)
-  payment_method String?   @db.VarChar(100)
-  payment_receipt String?  @db.VarChar(255)
-  payment_date   DateTime? @db.Timestamp(6)
-  created_at     DateTime? @default(now()) @db.Timestamp(6)
-  updated_at     DateTime? @default(now()) @db.Timestamp(6)
+  id                  Int       @id @default(autoincrement())
+  invoice_number      String    @unique @db.VarChar(50)
+  contract_id         Int?
+  tenant_id           Int
+  invoice_type        String?   @default("Sewa Hanggar") @db.VarChar(50) // 'Sewa Ruangan' | 'Sewa Hanggar' | 'SKRD Denda' | 'SKRD Overstay'
+  amount              Decimal   @db.Decimal(15, 2)
+  penalty_amount      Decimal?  @default(0) @db.Decimal(15, 2)
+  due_date            DateTime? @db.Date
+  status              String?   @default("Unpaid") @db.VarChar(50)
+  payment_method      String?   @db.VarChar(100)
+  payment_receipt     String?   @db.VarChar(255)
+  payment_date        DateTime? @db.Timestamp(6)
+  details             Json?     // Rincian rincian pemakaian armada: [{ registration_number, aircraft_type, entry_time, exit_time, total_nights, rate_per_night, subtotal, log_id }]
+  created_at          DateTime? @default(now()) @db.Timestamp(6)
+  updated_at          DateTime? @default(now()) @db.Timestamp(6)
   
-  contracts      contracts @relation(fields: [contract_id], references: [id], onDelete: Cascade)
-  tenants        tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  warnings       warnings[]
+  contracts           contracts? @relation(fields: [contract_id], references: [id], onDelete: SetNull)
+  tenants             tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  warnings            warnings[]
+  operational_logs    operational_logs[]
 }
 
 model warnings {
@@ -219,6 +261,114 @@ model warnings {
   
   tenants        tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   invoices       invoices? @relation(fields: [invoice_id], references: [id], onDelete: SetNull)
+}
+
+// =========================================================================
+// MODEL LOG OPERASIONAL
+// =========================================================================
+
+model operational_logs {
+  id                  Int       @id @default(autoincrement())
+  registration_number String    @db.VarChar(50)
+  tenant_id           Int
+  asset_id            Int?
+  entry_time          DateTime  @db.Timestamp(6)
+  exit_time           DateTime? @db.Timestamp(6)
+  is_overnight        Boolean   @default(false)
+  evidence_photo      String?   @db.VarChar(255)
+  officer_id          Int
+  parking_location    String    @default("Hanggar") @db.VarChar(50)
+  amount              Decimal?  @db.Decimal(15, 2)
+  notes               String?   @db.Text
+  billing_status      String    @default("Unbilled") @db.VarChar(50)
+  contract_id         Int?
+  application_id      Int?
+  invoice_id          Int?
+  schedule_id         Int?
+  is_overstay         Boolean   @default(false)
+  overstay_days       Int?      @default(0)
+  created_at          DateTime? @default(now()) @db.Timestamp(6)
+  updated_at          DateTime? @default(now()) @db.Timestamp(6)
+
+  tenants             tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  officer             users     @relation(fields: [officer_id], references: [id], onDelete: Restrict)
+  contracts           contracts? @relation(fields: [contract_id], references: [id], onDelete: SetNull)
+  rental_applications rental_applications? @relation(fields: [application_id], references: [id], onDelete: SetNull)
+  invoices            invoices? @relation(fields: [invoice_id], references: [id], onDelete: SetNull)
+  flight_schedules    flight_schedules? @relation(fields: [schedule_id], references: [id], onDelete: SetNull)
+  overnight_items     daily_overnight_items[]
+}
+
+// =========================================================================
+// MODEL JADWAL PEMAKAIAN HANGGAR (FLIGHT SCHEDULES)
+// =========================================================================
+
+model flight_schedules {
+  id                     Int       @id @default(autoincrement())
+  schedule_number        String    @unique @db.VarChar(50)
+  tenant_id              Int
+  contract_id            Int?
+  aircraft_id            Int?
+  registration_number    String    @db.VarChar(50)
+  aircraft_type          String?   @db.VarChar(100)
+  parking_location       String    @default("Hanggar") @db.VarChar(50)
+  purpose                String?   @db.VarChar(150)
+  estimated_arrival      DateTime  @db.Timestamp(6)
+  estimated_departure    DateTime? @db.Timestamp(6)
+  estimated_nights       Int       @default(1)
+  notes                  String?   @db.Text
+  flight_plan_url        String?   @db.VarChar(255)
+  status                 String    @default("Menunggu Verifikasi Petugas") @db.VarChar(50)
+  verified_by_officer_id Int?
+  officer_notes          String?   @db.Text
+  verified_at            DateTime? @db.Timestamp(6)
+  created_at             DateTime? @default(now()) @db.Timestamp(6)
+  updated_at             DateTime? @default(now()) @db.Timestamp(6)
+
+  tenant                 tenants   @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  contract               contracts? @relation(fields: [contract_id], references: [id], onDelete: SetNull)
+  aircraft               aircrafts? @relation(fields: [aircraft_id], references: [id], onDelete: SetNull)
+  verified_by_officer    users?    @relation(fields: [verified_by_officer_id], references: [id], onDelete: SetNull)
+  operational_logs       operational_logs[]
+}
+
+// =========================================================================
+// MODEL LAPORAN TUTUP HARI (DAILY OVERNIGHT REPORT)
+// =========================================================================
+
+model daily_overnight_reports {
+  id                     Int       @id @default(autoincrement())
+  report_date            DateTime  @db.Date
+  officer_id             Int
+  total_aircraft_staying Int       @default(0)
+  general_notes          String?   @db.Text
+  general_evidence_photo String?   @db.VarChar(255)
+  status                 String    @default("Submitted") @db.VarChar(50)
+  created_at             DateTime? @default(now()) @db.Timestamp(6)
+  updated_at             DateTime? @default(now()) @db.Timestamp(6)
+
+  officer                users     @relation(fields: [officer_id], references: [id], onDelete: Restrict)
+  items                  daily_overnight_items[]
+}
+
+model daily_overnight_items {
+  id                  Int       @id @default(autoincrement())
+  report_id           Int
+  operational_log_id  Int?
+  registration_number String    @db.VarChar(50)
+  tenant_id           Int?
+  asset_id            Int?
+  aircraft_type       String?   @db.VarChar(100)
+  parking_location    String    @default("Hanggar") @db.VarChar(50)
+  evidence_photo      String    @db.VarChar(255) // Wajib foto bukti
+  is_adhoc            Boolean   @default(false)  // true jika input manual Opsi B
+  notes               String?   @db.Text
+  created_at          DateTime? @default(now()) @db.Timestamp(6)
+
+  report              daily_overnight_reports @relation(fields: [report_id], references: [id], onDelete: Cascade)
+  operational_log     operational_logs?       @relation(fields: [operational_log_id], references: [id], onDelete: SetNull)
+  tenant              tenants?                @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
+  asset               assets?                 @relation(fields: [asset_id], references: [id], onDelete: SetNull)
 }
 
 // =========================================================================
@@ -262,3 +412,23 @@ model parking_warden_handovers {
   ticket_books            parking_ticket_books @relation(fields: [book_id], references: [id], onDelete: Restrict)
 }
 
+model otps {
+  id         Int      @id @default(autoincrement())
+  email      String   @unique @db.VarChar(100)
+  otp_code   String   @db.VarChar(10)
+  expires_at DateTime @db.Timestamp(6)
+  created_at DateTime @default(now()) @db.Timestamp(6)
+}
+
+model notifications {
+  id         Int       @id @default(autoincrement())
+  user_id    Int
+  title      String    @db.VarChar(255)
+  message    String    @db.Text
+  type       String    @db.VarChar(50)
+  is_read    Boolean   @default(false)
+  link_url   String?   @db.VarChar(255)
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  
+  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}

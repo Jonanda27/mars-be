@@ -7,6 +7,7 @@ const { authMiddleware } = require('../middlewares/authMiddleware');
 router.use(authMiddleware);
 
 router.get('/', assetController.getAssets);
+router.get('/:id/capacity', assetController.getAssetCapacity);
 router.get('/:id', assetController.getAsset);
 router.post('/', assetController.createAsset);
 router.put('/:id', assetController.updateAsset);

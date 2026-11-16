@@ -1,6 +1,5 @@
 const cron = require('node-cron');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 
 // Function to run the billing logic
 const generateMonthlyInvoices = async () => {
@@ -11,7 +10,6 @@ const generateMonthlyInvoices = async () => {
         const currentYear = currentDate.getFullYear();
         
         // 1. Ambil semua tagihan dengan status 'Scheduled' yang dijadwalkan untuk bulan ini (atau yang sudah lewat tapi belum diaktifkan)
-        const firstDayOfMonth = new Date(currentYear, currentMonth - 1, 1);
         const nextMonthFirstDay = new Date(currentYear, currentMonth, 1);
 
         const scheduledInvoices = await prisma.invoices.findMany({

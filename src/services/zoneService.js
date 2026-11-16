@@ -1,10 +1,9 @@
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 
 const getAllZones = async (airport_id) => {
   const where = {};
   if (airport_id) {
-    where.airport_id = parseInt(airport_id);
+    where.airport_id = Number.parseInt(airport_id, 10);
   }
   
   return await prisma.zones.findMany({
@@ -17,7 +16,7 @@ const getAllZones = async (airport_id) => {
 
 const getZoneById = async (id) => {
   const zone = await prisma.zones.findUnique({
-    where: { id: parseInt(id) },
+    where: { id: Number.parseInt(id, 10) },
     include: {
       airports: true
     }
@@ -39,7 +38,7 @@ const createZone = async (data) => {
 
   return await prisma.zones.create({
     data: {
-      airport_id: parseInt(airport_id),
+      airport_id: Number.parseInt(airport_id, 10),
       kode_zona,
       nama_zona,
       tipe_zona,
@@ -51,9 +50,9 @@ const createZone = async (data) => {
 const updateZone = async (id, data) => {
   const { airport_id, kode_zona, nama_zona, tipe_zona, deskripsi } = data;
   return await prisma.zones.update({
-    where: { id: parseInt(id) },
+    where: { id: Number.parseInt(id, 10) },
     data: {
-      airport_id: airport_id ? parseInt(airport_id) : undefined,
+      airport_id: airport_id ? Number.parseInt(airport_id, 10) : undefined,
       kode_zona,
       nama_zona,
       tipe_zona,
@@ -65,7 +64,7 @@ const updateZone = async (id, data) => {
 
 const deleteZone = async (id) => {
   return await prisma.zones.delete({
-    where: { id: parseInt(id) }
+    where: { id: Number.parseInt(id, 10) }
   });
 };
 

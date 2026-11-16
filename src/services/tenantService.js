@@ -41,8 +41,15 @@ exports.addTenant = async (tenantData) => {
   });
 };
 
-exports.updateTenantStatus = async (id, status_verifikasi) => {
+exports.updateTenantStatus = async (id, status_verifikasi, alasan_penolakan = null) => {
   const updateData = { status_verifikasi };
+  
+  if (status_verifikasi === 'Rejected') {
+    updateData.alasan_penolakan = alasan_penolakan;
+  } else {
+    updateData.alasan_penolakan = null;
+  }
+
   const existingTenant = await prisma.tenants.findUnique({ where: { id: parseInt(id) } });
   
   if (!existingTenant) throw new Error('Tenant not found');
@@ -69,6 +76,7 @@ exports.updateTenantStatus = async (id, status_verifikasi) => {
     where: { id: parseInt(id) },
     data: updateData
   });
+
   return tenant;
 };
 
@@ -116,6 +124,32 @@ function calculateRiskProfile(tenant) {
   };
 }
 
+exports.updateProfile = async (id, data) => {
+  const tenant = await prisma.tenants.findUnique({ where: { id: parseInt(id) } });
+  if (!tenant) throw new Error('Tenant not found');
+
+  // Set status to pending if NIB or NPWP was updated
+  let newStatus = tenant.status_verifikasi;
+  if ((data.nib && data.nib !== tenant.nib) || (data.npwp && data.npwp !== tenant.npwp)) {
+    newStatus = 'Pending';
+  }
+
+  const updatedTenant = await prisma.tenants.update({
+    where: { id: parseInt(id) },
+    data: {
+      nib: data.nib !== undefined ? data.nib : tenant.nib,
+      npwp: data.npwp !== undefined ? data.npwp : tenant.npwp,
+      alamat: data.alamat !== undefined ? data.alamat : tenant.alamat,
+      pic: data.pic !== undefined ? data.pic : tenant.pic,
+      nomor_telepon: data.nomor_telepon !== undefined ? data.nomor_telepon : tenant.nomor_telepon,
+      email: data.email !== undefined ? data.email : tenant.email,
+      status_verifikasi: newStatus
+    }
+  });
+
+  return updatedTenant;
+};
+
 exports.uploadLegalitas = async (id, documentType, filePath) => {
   const tenant = await prisma.tenants.findUnique({ where: { id: parseInt(id) } });
   if (!tenant) throw new Error('Tenant not found');
@@ -123,9 +157,17 @@ exports.uploadLegalitas = async (id, documentType, filePath) => {
   const currentLegalitas = tenant.legalitas || {};
   currentLegalitas[documentType] = filePath;
 
+  // Reset status to Pending if it was Rejected, so Admin knows they uploaded a new document
+  const newStatus = tenant.status_verifikasi === 'Rejected' ? 'Pending' : tenant.status_verifikasi;
+  const newAlasan = newStatus === 'Pending' ? null : tenant.alasan_penolakan;
+
   const updatedTenant = await prisma.tenants.update({
     where: { id: parseInt(id) },
-    data: { legalitas: currentLegalitas }
+    data: { 
+      legalitas: currentLegalitas,
+      status_verifikasi: newStatus,
+      alasan_penolakan: newAlasan
+    }
   });
   return updatedTenant;
 };

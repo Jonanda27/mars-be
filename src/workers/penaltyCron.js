@@ -1,6 +1,5 @@
 const cron = require('node-cron');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/db');
 const dayjs = require('dayjs');
 
 // Run everyday at Midnight: '0 0 * * *'
@@ -34,26 +33,28 @@ const initPenaltyCron = () => {
         const due = dayjs(invoice.due_date).startOf('day');
         const diffDays = today.diff(due, 'day');
         
-        if (diffDays > 0) {
-          // Rumus: ceil(hari / 30) -> minimal 1 bulan telat
-          let bulanTelat = Math.ceil(diffDays / 30);
+        if (diffDays >= 30) {
+          // Rumus: floor(hari / 30) -> menghitung full bulan telat
+          let bulanTelat = Math.floor(diffDays / 30);
           
           // Batas maksimum denda 24 bulan
           bulanTelat = Math.min(bulanTelat, 24);
 
-          // Hitung penalti (2% per bulan telat dari pokok)
-          const baseAmount = Number(invoice.amount);
-          const penaltyAmount = baseAmount * 0.02 * bulanTelat;
+          if (bulanTelat > 0) {
+            // Hitung penalti (1% per bulan telat dari pokok)
+            const baseAmount = Number(invoice.amount);
+            const penaltyAmount = baseAmount * 0.01 * bulanTelat;
 
-          await prisma.invoices.update({
-            where: { id: invoice.id },
-            data: {
-              status: 'Overdue',
-              penalty_amount: penaltyAmount
-            }
-          });
-          
-          updatedCount++;
+            await prisma.invoices.update({
+              where: { id: invoice.id },
+              data: {
+                status: 'Overdue',
+                penalty_amount: penaltyAmount
+              }
+            });
+            
+            updatedCount++;
+          }
         }
       }
 

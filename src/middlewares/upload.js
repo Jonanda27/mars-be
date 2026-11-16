@@ -1,39 +1,141 @@
+const path = require('node:path');
+const fs = require('node:fs');
+const crypto = require('node:crypto');
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+const prisma = require('../config/db');
 
-// Ensure upload directories exist
-const uploadDir = path.join(__dirname, '../../public/uploads/legalitas');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+const SUB_FOLDER_MAP = {
+  receipt: 'Pembayaran',
+  asset_image: 'Assets',
+  profile_picture: 'Profiles',
+  log_evidence: 'Logs',
+  signature_file: 'Kontrak',
+  official_letter: 'Permohonan'
+};
 
-// Multer config
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, file.fieldname + '-' + uniqueSuffix + ext);
+const determineSubFolder = (file, documentType) => {
+  if (SUB_FOLDER_MAP[file.fieldname]) {
+    return SUB_FOLDER_MAP[file.fieldname];
   }
-});
+  if (file.fieldname === 'file' || documentType) {
+    return 'Legalitas';
+  }
+  return 'Lainnya';
+};
+
+const resolveCompanyName = async (req) => {
+  if (req.body?.nama_perusahaan) {
+    return req.body.nama_perusahaan;
+  }
+  if (req.user?.tenant_id) {
+    try {
+      const tenant = await prisma.tenants.findUnique({
+        where: { id: Number.parseInt(req.user.tenant_id, 10) },
+        select: { nama_perusahaan: true }
+      });
+      if (tenant?.nama_perusahaan) {
+        return tenant.nama_perusahaan;
+      }
+    } catch (err) {
+      console.error('Failed to fetch tenant name for upload folder:', err);
+    }
+  }
+  return 'General';
+};
 
 const fileFilter = (req, file, cb) => {
   const allowedMimeTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
   if (allowedMimeTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error('Invalid file type. Only PDF, JPG, and PNG are allowed.'), false);
+    cb(new Error('Format file tidak didukung. Hanya file PDF, JPG, dan PNG yang diizinkan.'), false);
   }
 };
+
+const isCloudinaryConfigured = Boolean(
+  process.env.CLOUDINARY_CLOUD_NAME &&
+  process.env.CLOUDINARY_API_KEY &&
+  process.env.CLOUDINARY_API_SECRET
+);
+
+let storage;
+
+if (isCloudinaryConfigured) {
+  const cloudinary = require('cloudinary').v2;
+  const { CloudinaryStorage } = require('multer-storage-cloudinary');
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+  });
+
+  storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: async (req, file) => {
+      const uniqueSuffix = `${Date.now()}-${crypto.randomInt(1, 1e9)}`;
+      const ext = path.extname(file.originalname);
+      const basename = path.basename(file.originalname, ext);
+      const companyName = await resolveCompanyName(req);
+      const sanitizedCompanyName = companyName.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+      const subFolder = determineSubFolder(file, req.body?.documentType);
+      const resourceType = file.mimetype === 'application/pdf' ? 'raw' : 'auto';
+      const folderName = `MARS/Tenants/${sanitizedCompanyName}/${subFolder}`;
+      const finalPublicId = resourceType === 'raw' 
+        ? `${file.fieldname}-${basename}-${uniqueSuffix}${ext}`
+        : `${file.fieldname}-${basename}-${uniqueSuffix}`;
+
+      return {
+        folder: folderName,
+        public_id: finalPublicId,
+        resource_type: resourceType
+      };
+    },
+  });
+} else {
+  // Local disk storage fallback for development and self-hosted instances
+  const baseUploadsDir = path.join(__dirname, '../../public/uploads');
+  if (!fs.existsSync(baseUploadsDir)) {
+    fs.mkdirSync(baseUploadsDir, { recursive: true });
+  }
+
+  const rawDiskStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      const subFolder = determineSubFolder(file, req.body?.documentType).toLowerCase();
+      const targetDir = path.join(baseUploadsDir, subFolder);
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+      cb(null, targetDir);
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = `${Date.now()}-${crypto.randomInt(1, 1e9)}`;
+      const ext = path.extname(file.originalname);
+      const basename = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, '_');
+      cb(null, `${file.fieldname}-${basename}-${uniqueSuffix}${ext}`);
+    }
+  });
+
+  // Storage wrapper ensuring file.path is the relative web URL for frontend access
+  storage = {
+    _handleFile(req, file, cb) {
+      rawDiskStorage._handleFile(req, file, (err, info) => {
+        if (err) return cb(err);
+        const subFolder = determineSubFolder(file, req.body?.documentType).toLowerCase();
+        info.path = `/uploads/${subFolder}/${info.filename}`;
+        cb(null, info);
+      });
+    },
+    _removeFile(req, file, cb) {
+      rawDiskStorage._removeFile(req, file, cb);
+    }
+  };
+}
 
 const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB limit
+    fileSize: 15 * 1024 * 1024 // 15MB limit
   }
 });
 

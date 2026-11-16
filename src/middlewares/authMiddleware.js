@@ -5,21 +5,34 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secret_key_mars_2026';
 const verifyToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  let token;
+  if (authHeader && typeof authHeader === 'string') {
+    if (authHeader.toLowerCase().startsWith('bearer ')) {
+      token = authHeader.substring(7).trim();
+    } else {
+      token = authHeader.trim();
+    }
+  } else if (req.headers['x-access-token']) {
+    token = req.headers['x-access-token'];
+  } else if (req.query?.token) {
+    token = req.query.token;
+  }
+
+  if (!token) {
     const error = new Error('Akses ditolak. Token tidak ditemukan');
     error.statusCode = 401;
     return next(error);
   }
-
-  const token = authHeader.split(' ')[1];
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded; // Menyimpan data user (id, role, dll) ke dalam request
     next();
   } catch (err) {
+    // Wrap JWT verification failure as 401 Unauthorized
     const error = new Error('Token tidak valid atau sudah kadaluarsa');
     error.statusCode = 401;
+    error.cause = err;
     next(error);
   }
 };

@@ -11,6 +11,7 @@ router.delete('/tenant/:id', authMiddleware, authorizeRoles('Tenant'), aircraftC
 
 // General/Admin Routes
 router.get('/', aircraftController.getAircrafts);
+router.get('/types/master', aircraftController.getAircraftTypes);
 router.get('/:id', aircraftController.getAircraft);
 router.post('/', aircraftController.createAircraft);
 
